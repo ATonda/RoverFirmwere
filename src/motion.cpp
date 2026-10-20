@@ -24,6 +24,9 @@ static constexpr float CAR_STD_MAX = 0.06f;     // [g]   rozptyl |a| pod 60 mg
 static constexpr float V_WALK = 3.0f;           // [m/s] nad = ne chůze
 static constexpr float V_DRIVE = 6.0f;          // [m/s] jistě jízda
 static constexpr int N_MEASURE = 20;            // 10 s klidu -> Měřím
+static constexpr float EXIT_GYRO = 10.0f;       // z Měřím hned: |ω| > 10 °/s (zvednutí, odnesení)
+static constexpr float EXIT_STD = 0.02f;        //               nebo σ|a| > 20 mg
+static constexpr int N_EXIT = 3;                // jinak až po 1,5 s trvalého neklidu (klepnutí, dveře auta, vítr se ignorují)
 static constexpr int N_DRIVE_FAST = 10;         // 5 s nad 6 m/s -> Jedu
 static constexpr int N_DRIVE_MED = 20;          // 10 s nad 3 m/s bez kroků -> Jedu
 static constexpr int N_DRIVE_SMOOTH = 6;        // 3 s nad 2 m/s, hladce, bez kroků -> Jedu (rozjezd)
@@ -40,7 +43,7 @@ static Features f;
 static State cur = HANDLE;
 static State lastMoving = HANDLE;    // poslední stav s pohybem (rozjezd po stání v autě)
 static uint32_t measureSince = 0;
-static int nStill = 0, nSteps = 0, nSharpSlow = 0, nWalkV = 0, nFast = 0, nMed = 0, nSmooth = 0;
+static int nUnrest = 0, nStill = 0, nSteps = 0, nSharpSlow = 0, nWalkV = 0, nFast = 0, nMed = 0, nSmooth = 0;
 static bool autoMode = false;
 static uint8_t sentModel = 0xFF;
 static uint32_t sentMs = 0;
@@ -118,6 +121,7 @@ static void evaluate() {
   computeFeatures();
   float v = f.speed;  // -1 = bez fixu
   nStill = f.still ? nStill + 1 : 0;
+  nUnrest = f.still ? 0 : nUnrest + 1;
   nSteps = f.steps ? nSteps + 1 : 0;
   nSharpSlow = (f.sharp && v < V_HANDLE) ? nSharpSlow + 1 : 0;  // i bez fixu (v = -1)
   nWalkV = (v > V_WALK_MIN && v <= V_WALK && f.accStd > WALK_STD_MIN) ? nWalkV + 1 : 0;
@@ -126,8 +130,8 @@ static void evaluate() {
   nMed = (v > V_WALK && !f.steps) ? nMed + 1 : 0;
 
   if (cur == MEASURE) {
-    if (f.still) return;
-    // pohyb: hned ven ze stacionárního modelu
+    // krátký otřes (klepnutí, dveře, vítr) Měřím nepřeruší; zvednutí nebo trvalý pohyb ano
+    if (f.gyroMax <= EXIT_GYRO && f.accStd <= EXIT_STD && nUnrest < N_EXIT) return;
     if (f.steps) setState(WALK);
     else if (f.sharp) setState(HANDLE);
     else if (v > V_WALK || (lastMoving == DRIVE && millis() - measureSince < DRIVE_RESUME_MS)) setState(DRIVE);
