@@ -24,7 +24,7 @@ static constexpr float CAR_STD_MAX = 0.06f;     // [g]   rozptyl |a| pod 60 mg
 static constexpr float V_WALK = 3.0f;           // [m/s] nad = ne chůze
 static constexpr float V_DRIVE = 6.0f;          // [m/s] jistě jízda
 static constexpr int N_MEASURE = 20;            // 10 s klidu -> Měřím
-static constexpr float EXIT_GYRO = 10.0f;       // z Měřím hned: |ω| > 10 °/s (zvednutí, odnesení)
+static constexpr float EXIT_GYRO = 20.0f;       // z Měřím hned: |ω| > 20 °/s (zvednutí 35–440 °/s; klepnutí do stolu 5–11 °/s)
 static constexpr float EXIT_STD = 0.02f;        //               nebo σ|a| > 20 mg
 static constexpr int N_EXIT = 3;                // jinak až po 1,5 s trvalého neklidu (klepnutí, dveře auta, vítr se ignorují)
 static constexpr int N_DRIVE_FAST = 10;         // 5 s nad 6 m/s -> Jedu
@@ -103,6 +103,18 @@ static void computeFeatures() {
   f.steps = best > STEP_SCORE && f.accStd > STEP_STD_MIN && f.accStd < STEP_STD_MAX;
   f.stepHz = f.steps && bestLag ? 120.0f / bestLag : 0;
   f.still = gmax < STILL_GYRO && dev < STILL_DEV && f.accStd < STILL_STD;
+  // posledních 0,5 s (STEP vzorků): klid pro trvání neklidu ve stavu Měřím
+  float rg = 0, rd = 0, rm = 0, rv = 0;
+  for (int i = WIN - STEP; i < WIN; i++) rm += x[i];
+  rm /= STEP;
+  for (int i = WIN - STEP; i < WIN; i++) {
+    int k = (head + i) % WIN;
+    if (bufG[k] > rg) rg = bufG[k];
+    float d = fabsf(bufA[k] - 1.0f);
+    if (d > rd) rd = d;
+    rv += (x[i] - rm) * (x[i] - rm);
+  }
+  f.quiet = rg < STILL_GYRO && rd < STILL_DEV && sqrtf(rv / STEP) < STILL_STD;
   f.sharp = !f.steps && (gmax > SHARP_GYRO || dev > SHARP_DEV);
 }
 
@@ -121,7 +133,7 @@ static void evaluate() {
   computeFeatures();
   float v = f.speed;  // -1 = bez fixu
   nStill = f.still ? nStill + 1 : 0;
-  nUnrest = f.still ? 0 : nUnrest + 1;
+  nUnrest = f.quiet ? 0 : nUnrest + 1;  // po sobě jdoucí neklidné půlsekundy
   nSteps = f.steps ? nSteps + 1 : 0;
   nSharpSlow = (f.sharp && v < V_HANDLE) ? nSharpSlow + 1 : 0;  // i bez fixu (v = -1)
   nWalkV = (v > V_WALK_MIN && v <= V_WALK && f.accStd > WALK_STD_MIN) ? nWalkV + 1 : 0;
