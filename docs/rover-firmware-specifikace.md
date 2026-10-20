@@ -386,9 +386,9 @@ Hlavní použití: měření za chůze (mapování), statické geodetické měř
 **Geometrie krabičky a IMU**
 - Krabička samostatná, jen pro GNSS: základna 100 × 85 mm, výška 40 mm, anténa (ARP) uprostřed víka.
 - Čelo = krátká strana s USB, tlačítkem a IMU. IMU (LSM6DSV16X, pravotočivý) při pohledu na čelo 25 mm od pravého boku, 24 mm ode dna, u čela.
-- Osy IMU: X vodorovně doleva (při pohledu na čelo), Y svisle dolů ke dnu, Z kolmo ven z čela.
-- Kontrola (konzole `m`): na dně ay ≈ −1000 mg, čelem nahoru az ≈ +1000 mg, levým bokem nahoru ax ≈ +1000 mg.
-- Rameno páky IMU → ARP v osách IMU: X +17,5 mm, Y −16 mm, Z ≈ −45 mm (IMU ~5 mm od čela, odhad), celkem ~51 mm.
+- Osy IMU (ověřeno testem 6 poloh 20. 10.): X vodorovně **doprava** (při pohledu na čelo s USB), Y svisle dolů ke dnu, Z **dovnitř krabičky** (od čela).
+- Test 6 poloh [g]: dnem dolů ay −0,987; víkem dolů ay +1,008; USB nahoru az −0,992; USB dolů az +1,003 (náklon 3,2° kvůli konektoru); levým bokem nahoru ax −0,988; pravým bokem nahoru ax +1,013. Bias akcelerometru X +12,5 / Y +10,8 / Z +5,7 mg, měřítko 1,000 / 0,997 / 0,997, šum 0,5 mg.
+- Rameno páky IMU → ARP v osách IMU: X −17,5 mm, Y −16 mm, Z ≈ +45 mm (IMU ~5 mm od čela, odhad), celkem ~51 mm.
 - Nošení: na levém boku; orientace vůči směru chůze se určí testem orientace (stání, předklon/záklon/úklony, rovná chůze).
 
 **Verze 0.13.0 – přeloženo, na HW netestováno (20. 10.):** rover bez Wi-Fi, nastavení z aplikace (rozhodnutí 20. 10.).
@@ -403,3 +403,13 @@ Hlavní použití: měření za chůze (mapování), statické geodetické měř
 - `get info`: `caps`, `boot` (ms od zapnutí do 3D fixu, korekcí, float, RTK fix), `upMs`, `reset` – test zálohy X20 po vypnutí.
 - Kalibrace gyra obsluhuje během 3 s X20 (UART nepřeteče).
 - Ověřit na HW: klíče CFG-NAVCOR a CFG-SBAS (NAK → STA korekceCfg 0), hodnoty corrSource pro HAS v NAV-SIG, velikost NAV-SIG, volná RAM s BT (dřív ~56 kB).
+
+**Testy 20. 10. (FW 0.13.0, aplikace 0.8.0):** les v ruce 9 min a auto 14 min – HAS celou dobu (zdroj korekcí NAV-SIG = 12), hAcc medián 0,20 / 0,25 m, SV 27–32 / 18–32; IMU 58,5 Hz bez mezer, NAV rámce u každé epochy, ztráty BT 3 epochy z 8 000. Zatáčky z gyra (osa Y) poznatelné bez ručních značek. Auto jelo s profilem Chodec.
+
+**Verze 0.14.0 – přeloženo, na HW netestováno (20. 10.):** stav přístroje a automatický dynamický model (modul `motion`).
+- Stavy: Měřím (klid), Manipulace (prudké pohyby bez kroků na místě), Chodím, Jedu. Okno 2 s IMU 120 Hz, vyhodnocení po 0,5 s: rozptyl |a|, odchylka |a| od 1 g, max |ω|, autokorelace |a| pro kroky 1,25–3 Hz, rychlost GNSS (sAcc < 1 m/s).
+- Klid: |ω| < 3 °/s, ||a| − 1 g| < 0,05 g, σ|a| < 15 mg. Kroky: autokorelace > 0,35 a σ|a| 0,05–0,6 g. Prudký pohyb: bez kroků a |ω| > 30 °/s nebo náraz > 0,3 g.
+- Přechody: do Měřím po 10 s klidu (rychlost < 0,2 m/s); z Měřím ven hned (0,5 s) – kroky = Chodím, prudký pohyb = Manipulace, rozjezd nebo stání v autě do 2 min = Jedu. Jedu: 5 s nad 6 m/s nebo 10 s nad 3 m/s bez kroků. Z Jedu do Chodím po 10 s kroků pod 3 m/s; do Manipulace po 1 s prudkých pohybů pod 0,3 m/s. Z Manipulace do Chodím po 3 s kroků nebo rychlosti 0,4–3 m/s. Z Chodím do Manipulace po 3 s prudkých pohybů pod 0,3 m/s.
+- Simulace na záznamech 20. 10. (60 Hz): auto 809 s Jedu od rozjezdu, 6 poloh přesně klid/manipulace, les: chůze, zastávka 110 s jako Měřím (start 10 s po zastavení), 2 krátké Manipulace při pomalé chůzi.
+- Profil s modelem „automaticky“: Měřím = stationary (2), Manipulace a Chodím = pedestrian (3), Jedu = automotive (4); CFG-NAVSPG-DYNMODEL jen RAM, nejvýš 1× za 2 s; měření bodu z aplikace (statický model) má přednost. Výchozí profily nově: Automaticky 5 Hz (výchozí), Chodec 5 Hz, Auto 5 Hz, Statika 1 Hz (jen po naformátování LittleFS).
+- STA navíc: stav, automaticky, model X20, σ|a| [mg], odchylka [mg], ω max, kroky ×100, kroky Hz, rychlost, počet změn. `get info` caps `motion`. Konzole: řádek `[pohyb] … -> …` při změně, v živém výpisu stav a znaky.

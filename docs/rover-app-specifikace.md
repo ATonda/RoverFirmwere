@@ -267,3 +267,10 @@ Cíl: kratší studený start X20 po delším vypnutí bez účtu a bez internet
 - **Nastavení → Nastavení roveru** (FW 0.13.0+): editor profilů roveru (název, 1/5/10 Hz, dynamický model, elevační maska, SBAS, HAS, bzučák, věty NMEA; výchozí profil, kopie, smazání, uložení do roveru), název Bluetooth, kalibrace baterie a gyra, průchozí režim USB ↔ X20, restart roveru; zdroj korekcí z NAV-SIG a výsledek nastavení SBAS/HAS.
 - Kvalita 2 se zobrazuje jako „SBAS“.
 - Diagnostika k trase (Diag CSV) už ukládá frontu BT, zpoždění, ztráty a volnou RAM – podklad k poklesu kvality BT v autě.
+
+## 12. Stav aplikace 0.8.1 (20. 10.)
+
+- Stav přístroje z roveru (FW 0.14.0): Měřím / Manipulace / Chodím / Jedu v Živě vedle kvality a v Nastavení roveru (s modelem X20 a znaky σ|a|, ω max, kroky). Profil roveru lze nastavit na model „automaticky“.
+- Test „Celý den (lehký)“: bez surového proudu, každá 5. epocha, ruční značky skutečného stavu (Měřím, Manipulace, Chodím, Jedu) a automatické značky „rover: …“ při změně stavu; `motion.csv` (1 Hz: stav, model, znaky) v ZIPu. „Celý den (plný)“ se surovou IMU.
+- Osy IMU v `test.json` opraveny podle testu 6 poloh (X doprava, Z dovnitř, rameno −17,5 / −16 / +45 mm).
+- Zdroj korekcí 12 = HAS. Název ZIPu se scénářem (`RG_TEST_20261020_161249_Les.zip`).

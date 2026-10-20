@@ -6,6 +6,7 @@
 #include "config.h"
 #include "epochbuf.h"
 #include "gnss.h"
+#include "motion.h"
 #include "power.h"
 #include "settings.h"
 
@@ -174,7 +175,9 @@ static void safeCopy(char *dst, size_t size, const char *src) {
 //           ubxChyby,volnáRAM,měřeníFáze,měřeníČas,měřeníEpochy,btZahozeno,
 //           btFronta[B],režimAplikace,eoe(1 = X20 posílá konec epochy),hpEpoch,
 //           ubxOk,ubxVadné,mgaAck,mgaNak,mgaDbd,ackAiding (0.11.0),frekvence[Hz] (0.12.0),
-//           zdrojKorekcí(NAV-SIG, -1 žádný),signálůSKorekcí,korekceCfg(1 OK/0 NAK/-1),průchozí,navZáznam (0.13.0)
+//           zdrojKorekcí(NAV-SIG, -1 žádný),signálůSKorekcí,korekceCfg(1 OK/0 NAK/-1),průchozí,navZáznam (0.13.0),
+//           stav(0 Měřím,1 Manipulace,2 Chodím,3 Jedu),automaticky(0/1),modelX20,|a|σ[mg],|a|odchylka[mg],
+//           ωmax[°/s],kroky(0–100),krokyHz,rychlost[m/s](-1 bez fixu),změnStavu (0.14.0)
 // Od 0.13.0 nemá rover měření bodu – pole měřeníFáze/Čas/Epochy jsou 0.
 void sendSta() {
   if (!btlink::connected()) return;
@@ -183,7 +186,7 @@ void sendSta() {
   float v = power::batteryVolts();
   char pname[25];
   safeCopy(pname, sizeof(pname), settings::profile(settings::active()).name);
-  char b[320];
+  char b[448];
   int n = snprintf(b, sizeof(b), "$PRVR,STA,%s,%.2f,%d,%d,%d,%s,%lu,%lu,", FW_VERSION, v, power::batteryPercentStable(),
                    settings::active(), settings::count(), pname, (unsigned long)bs.rtcmOk, (unsigned long)bs.rtcmBad);
   if (bs.rtcmOk) n += snprintf(b + n, sizeof(b) - n, "%.1f,%u,", (millis() - bs.rtcmLastMs) / 1000.0f, bs.rtcmLastType);
@@ -201,6 +204,12 @@ void sendSta() {
   bool sigOk = g.valid && millis() - g.rxMs < 3000;
   n += snprintf(b + n, sizeof(b) - n, ",%d,%u,%d,%d,%d", sigOk ? g.dominant : -1, sigOk ? g.corrUsed : 0, gs.corrCfg,
                 hooks.bridgeActive && hooks.bridgeActive() ? 1 : 0, navRecording() ? 1 : 0);
+  // od FW 0.14.0: stav přístroje a automatický model
+  const motion::Features &mf = motion::features();
+  n += snprintf(b + n, sizeof(b) - n, ",%u,%d,%u,%d,%d,%.1f,%d,%.1f,%.2f,%lu", (unsigned)motion::state(),
+                motion::autoOn() ? 1 : 0, gnss::dynEffective(), (int)lroundf(mf.accStd * 1000),
+                (int)lroundf(mf.accDev * 1000), mf.gyroMax, (int)lroundf(mf.stepScore * 100), mf.stepHz, mf.speed,
+                (unsigned long)motion::changes());
   emit(b, sizeof(b), n);
   btlink::flush();
 }
@@ -281,7 +290,7 @@ static void infoJson(JsonDocument &d) {
   d["heap"] = ESP.getFreeHeap();
   d["up"] = millis() / 1000;
   // od 0.13.0: rover umí nastavení z aplikace (profily, přístroj, kalibrace, průchozí režim)
-  d["caps"] = "set,cal,pass,navrec,sig,boot";
+  d["caps"] = "set,cal,pass,navrec,sig,boot,motion";
   // doba od zapnutí ESP (= napájení X20) do prvního fixu atd. [ms]; -1 = zatím ne
   JsonObject bt = d["boot"].to<JsonObject>();
   bt["fix"] = bootFix ? (int32_t)bootFix : -1;

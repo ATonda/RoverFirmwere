@@ -26,7 +26,7 @@ uint8_t dynCode(Dyn d) {
   switch (d) {
     case Dyn::Automotive: return 4;
     case Dyn::Stationary: return 2;
-    case Dyn::Auto:  // automatické přepínání bude v kroku 6, do té doby start jako chodec
+    case Dyn::Auto:  // start jako chodec, dál přepíná modul motion podle stavu
     case Dyn::Pedestrian:
     default: return 3;
   }
@@ -133,16 +133,19 @@ static bool writeFile(const char *path, const String &s) {
 }
 
 static void defaultProfiles() {
-  nProfiles = 3;
+  nProfiles = 4;
   profiles[0] = Profile();
-  strlcpy(profiles[0].name, "Chodec 5 Hz", sizeof(profiles[0].name));
+  strlcpy(profiles[0].name, "Automaticky 5 Hz", sizeof(profiles[0].name));
+  profiles[0].dyn = Dyn::Auto;
   profiles[1] = Profile();
-  strlcpy(profiles[1].name, "Auto 5 Hz", sizeof(profiles[1].name));
-  profiles[1].dyn = Dyn::Automotive;
+  strlcpy(profiles[1].name, "Chodec 5 Hz", sizeof(profiles[1].name));
   profiles[2] = Profile();
-  strlcpy(profiles[2].name, "Statika 1 Hz", sizeof(profiles[2].name));
-  profiles[2].rateHz = 1;
-  profiles[2].dyn = Dyn::Stationary;
+  strlcpy(profiles[2].name, "Auto 5 Hz", sizeof(profiles[2].name));
+  profiles[2].dyn = Dyn::Automotive;
+  profiles[3] = Profile();
+  strlcpy(profiles[3].name, "Statika 1 Hz", sizeof(profiles[3].name));
+  profiles[3].rateHz = 1;
+  profiles[3].dyn = Dyn::Stationary;
   defIdx = 0;
 }
 

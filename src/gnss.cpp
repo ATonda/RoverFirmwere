@@ -452,6 +452,16 @@ bool setMeasMode(bool staticModel, bool raw) {
   return sendValSet(v, 1000) == 1;
 }
 
+bool setDynAuto(uint8_t dyn) {
+  dynModel = dyn;
+  if (mStatic) return true;
+  ubx::ValSet v(ubx::LAYER_RAM);
+  v.addU1(ubx::KEY_NAVSPG_DYNMODEL, dyn);
+  return sendValSet(v, 300) == 1;
+}
+
+uint8_t dynEffective() { return effDyn(); }
+
 bool measStatic() { return mStatic; }
 bool measRaw() { return mRaw; }
 

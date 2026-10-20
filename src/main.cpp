@@ -9,6 +9,7 @@
 
 #include "epochbuf.h"
 #include "imustream.h"
+#include "motion.h"
 #include "btlink.h"
 #include "buzzer.h"
 #include "button.h"
@@ -147,6 +148,10 @@ static void printStatus() {
                 (unsigned long)bs.pairFail, btTx,
                 (unsigned long)bs.txDropped, btRx, (unsigned long)bs.rtcmOk, (unsigned long)bs.rtcmBad);
   if (bs.rtcmOk) Serial.printf(" posl. %u před %.1f s", bs.rtcmLastType, (millis() - bs.rtcmLastMs) / 1000.0f);
+  const motion::Features &mf = motion::features();
+  Serial.printf("     stav %s%s, model X20 %u | |a| σ %.0f mg, odchylka %.2f g, ω max %.0f °/s, kroky %.2f (%.1f Hz), v %.1f m/s\n",
+                motion::stateName(motion::state()), motion::autoOn() ? " (automaticky)" : "", gnss::dynEffective(),
+                mf.accStd * 1000, mf.accDev, mf.gyroMax, mf.stepScore, mf.stepHz, mf.speed);
   const gnss::SigSummary &sg = gnss::sig();
   Serial.printf(" | GGA kval. %d kor. %s (zdroj %d, sig. %u/%u) | HDOP %.2f σN %.2f σE %.2f σD %.2f m%s\n",
                 nmea::ggaQuality(), p.corrAge ? "ano" : "-", sg.dominant, sg.corrUsed, sg.n, dp.hDOP, cv.sN, cv.sE,
@@ -212,6 +217,7 @@ static void applyProfile(int i, bool reconfigure) {
   const settings::Profile &p = settings::profile(settings::active());
   gnss::setParams(1000 / p.rateHz, settings::dynCode(p.dyn), p.elevMask);
   gnss::setCorr(p.sbas, p.has);
+  motion::setAuto(p.dyn == settings::Dyn::Auto);
   nmea::setMask(proto::appMode() ? (uint8_t)(p.nmea & (nmea::GGA | nmea::RMC)) : p.nmea);
   buzzer::setEnabled(p.buzzer);
   Serial.printf("[profil] %d/%d %s – %u Hz, %s, maska %d°, SBAS %s, HAS %s\n", settings::active() + 1,
@@ -613,6 +619,8 @@ void loop() {
   pvtPending = false;
   satPending = false;
   buzzer::poll();
+  if (newPvt) motion::onPvt();
+  motion::poll();
 
   {
     btlink::poll();
@@ -664,6 +672,7 @@ void loop() {
   // Spotřebitel vzorků IMU – zde bude EKF (krok 7); zatím pohyb pro POS a surová data do aplikace
   imu::Sample smp;
   while (imu::pop(smp)) {
+    motion::onImu(smp);
     proto::onImu(smp);
     imustream::onImu(smp);
   }

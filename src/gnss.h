@@ -133,6 +133,10 @@ bool configure(bool verbose);    // pošle konfiguraci do RAM X20
 bool setMeasMode(bool staticModel, bool raw);
 bool measStatic();
 bool measRaw();
+// Automatický model (profil „automaticky“): pošle CFG-NAVSPG-DYNMODEL do RAM X20 a pamatuje si ho pro configure().
+// Během měření bodu (statický model) jen uloží. true = X20 potvrdila.
+bool setDynAuto(uint8_t dyn);
+uint8_t dynEffective();          // model, který má X20 teď nastavený (2 stationary, 3 pedestrian, 4 automotive)
 // Rámce RXM-RAWX / RXM-SFRBX (kompletní UBX) – předávají se do BT
 void onRawFrame(void (*cb)(const uint8_t *frame, uint16_t len));
 // Rámce NAV-PVT, NAV-COV a NAV-HPPOSLLH (kompletní UBX) – při záznamu v aplikaci do BT (podklad pro EKF)
