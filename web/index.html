@@ -1,0 +1,1412 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rover</title>
+<style>
+:root{--bg:#12161c;--card:#1b222b;--line:#2c3642;--tx:#e6ebf0;--mut:#8b98a6;--acc:#3fa3ff;--ok:#3ccf7a;--warn:#f0b43c;--bad:#ff5c5c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:#0d1117;border-bottom:1px solid var(--line);padding:8px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+header h1{font-size:17px;margin:0;flex:1}
+header .st{font-size:13px;color:var(--mut)}
+nav{display:flex;gap:4px;padding:8px 12px;background:#0d1117;border-bottom:1px solid var(--line);overflow-x:auto}
+nav button{flex:1;min-width:80px}
+main{padding:12px;max-width:960px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+.card h2{font-size:15px;margin:0 0 8px;color:var(--acc)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 12px}
+.kv{display:flex;justify-content:space-between;gap:8px;border-bottom:1px dotted var(--line);padding:2px 0}
+.kv span:first-child{color:var(--mut)}
+.kv span:last-child{text-align:right;font-variant-numeric:tabular-nums}
+.big{font-size:22px;font-weight:600}
+button,input,select{font:inherit;color:var(--tx);background:#25303c;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+button{cursor:pointer}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+button.dng{background:#5a2323;border-color:#7a2d2d}
+button.on{background:var(--acc);color:#fff}
+input[type=checkbox]{width:20px;height:20px;vertical-align:middle}
+input[type=range]{width:100%;padding:0}
+label{display:block;margin:6px 0}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+.row>*{flex:1 1 auto}
+canvas{width:100%;display:block;background:#10151b;border-radius:8px}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:13px;color:var(--mut);margin-top:6px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:middle}
+.banner{padding:12px;border-radius:10px;margin-bottom:12px;font-weight:600}
+.banner.warn{background:#4a3a12;border:1px solid var(--warn)}
+.banner.bad{background:#4a1a1a;border:1px solid var(--bad)}
+.hide{display:none!important}
+.mut{color:var(--mut);font-size:13px}
+.plist{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+.plist button{text-align:left}
+.fix0{color:var(--bad)}.fix1{color:var(--warn)}.fix2{color:var(--ok)}
+progress{width:100%;height:18px}
+table{border-collapse:collapse;width:100%;font-size:13px;margin-top:6px}
+td,th{border-bottom:1px solid var(--line);padding:3px 6px;text-align:right;white-space:nowrap}
+th{color:var(--mut);font-weight:500}
+td:first-child,th:first-child{text-align:left}
+body.bridge main .lock{opacity:.35;pointer-events:none}
+#msg{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:#000c;border:1px solid var(--line);padding:10px 16px;border-radius:10px;z-index:10;max-width:90%}
+</style>
+</head>
+<body>
+<header>
+  <h1>Rover <span id="fw" class="mut"></span></h1>
+  <span class="st" id="conn">připojuji…</span>
+  <button class="pri" id="btnExit">Uložit a vypnout Wi-Fi</button>
+</header>
+<nav id="tabs">
+  <button data-t="stav" class="on">Stav</button>
+  <button data-t="sat">Satelity</button>
+  <button data-t="prof">Profily</button>
+  <button data-t="test">Test</button>
+  <button data-t="dev">Přístroj</button>
+</nav>
+<main>
+  <div id="bnRescue" class="banner bad hide">Záchranný režim – firmware několikrát po sobě spadl. Nahraj opravený firmware přes USB nebo restartuj.</div>
+  <div id="bnBridge" class="banner warn hide">
+    Průchozí režim: USB je připojeno k X20 (<span id="brBaud"></span> Bd). Zavři sériový monitor a v u-center otevři COM port na této rychlosti.
+    <div class="row"><button class="pri" id="btnBridgeStop">Ukončit průchozí režim</button></div>
+  </div>
+
+  <!-- ===================== STAV ===================== -->
+  <section id="t-stav" class="lock">
+    <div class="card">
+      <h2>Řešení</h2>
+      <div class="row"><span class="big" id="fix">-</span><span id="fixSub" class="mut"></span></div>
+      <div class="grid">
+        <div class="kv"><span>Satelity</span><span id="sv">-</span></div>
+        <div class="kv"><span>hAcc</span><span id="hAcc">-</span></div>
+        <div class="kv"><span>vAcc</span><span id="vAcc">-</span></div>
+        <div class="kv"><span>σ N / E</span><span id="sNE">-</span></div>
+        <div class="kv"><span>σ D</span><span id="sD">-</span></div>
+        <div class="kv"><span>PDOP</span><span id="pdop">-</span></div>
+        <div class="kv"><span>HDOP / VDOP</span><span id="hvdop">-</span></div>
+        <div class="kv"><span>Stáří korekcí</span><span id="corr">-</span></div>
+        <div class="kv"><span>Rychlost</span><span id="spd">-</span></div>
+        <div class="kv"><span>Kurz</span><span id="hdg">-</span></div>
+      </div>
+      <div class="grid" style="margin-top:6px">
+        <div class="kv"><span>Šířka</span><span id="lat">-</span></div>
+        <div class="kv"><span>Délka</span><span id="lon">-</span></div>
+        <div class="kv"><span>Výška n. m.</span><span id="h">-</span></div>
+        <div class="kv"><span>Výška elips.</span><span id="he">-</span></div>
+        <div class="kv"><span>Čas UTC</span><span id="utc">-</span></div>
+        <div class="kv"><span>Restart X20</span><span id="ttff">-</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Rozptyl polohy</h2>
+      <canvas id="cvSc" height="300"></canvas>
+      <div class="grid" style="margin-top:6px">
+        <div class="kv"><span>Bodů</span><span id="scN">0</span></div>
+        <div class="kv"><span>σ N / E</span><span id="scS">-</span></div>
+        <div class="kv"><span>2DRMS</span><span id="sc2">-</span></div>
+        <div class="kv"><span>CEP50</span><span id="scC">-</span></div>
+        <div class="kv"><span>Rozsah výšky</span><span id="scH">-</span></div>
+      </div>
+      <div class="row"><button id="btnScClr">Vymazat</button><button id="btnCsv">Export CSV</button></div>
+      <div class="mut">Body se sbírají v prohlížeči 1× za s (nejvýš 3600). Stránku nech otevřenou.</div>
+    </div>
+
+    <div class="card">
+      <h2>Komunikace</h2>
+      <div class="grid">
+        <div class="kv"><span>UART1 X20</span><span id="uBaud">-</span></div>
+        <div class="kv"><span>Příjem</span><span id="uRate">-</span></div>
+        <div class="kv"><span>UBX OK / chyby</span><span id="ubx">-</span></div>
+        <div class="kv"><span>Poslední UBX</span><span id="ubxAge">-</span></div>
+        <div class="kv"><span>Nové hledání X20</span><span id="reinit">-</span></div>
+        <div class="kv"><span>NAV-PVT</span><span id="pvtHz">-</span></div>
+        <div class="kv"><span>PPS</span><span id="pps">-</span></div>
+        <div class="kv"><span>PVT za PPS</span><span id="ppsLat">-</span></div>
+        <div class="kv"><span>BT připojení</span><span id="btCon">-</span></div>
+        <div class="kv"><span>BT odesláno</span><span id="btTx">-</span></div>
+        <div class="kv"><span>BT přijato</span><span id="btRx">-</span></div>
+        <div class="kv"><span>RTCM OK / vadné</span><span id="rtcm">-</span></div>
+        <div class="kv"><span>Poslední RTCM</span><span id="rtcmL">-</span></div>
+      </div>
+      <div class="mut">V konfiguračním režimu je Bluetooth vypnuté – údaje BT jsou z provozu před přepnutím.</div>
+    </div>
+
+    <div class="card">
+      <h2>IMU</h2>
+      <div class="grid">
+        <div class="kv"><span>Stav</span><span id="imuSt">-</span></div>
+        <div class="kv"><span>ODR</span><span id="imuOdr">-</span></div>
+        <div class="kv"><span>Vzorků</span><span id="imuN">-</span></div>
+        <div class="kv"><span>Přetečení FIFO</span><span id="imuOvf">-</span></div>
+        <div class="kv"><span>Nové nastavení</span><span id="imuRe">-</span></div>
+        <div class="kv"><span>Chyby I2C</span><span id="imuErr">-</span></div>
+        <div class="kv"><span>Teplota</span><span id="imuT">-</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Přístroj</h2>
+      <div class="grid">
+        <div class="kv"><span>Baterie</span><span id="bat">-</span></div>
+        <div class="kv"><span>Doba běhu</span><span id="up">-</span></div>
+        <div class="kv"><span>Profil</span><span id="profN">-</span></div>
+        <div class="kv"><span>FW ESP</span><span id="fwE">-</span></div>
+        <div class="kv"><span>X20</span><span id="fwX">-</span></div>
+        <div class="kv"><span>Volná RAM</span><span id="heap">-</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== SATELITY ===================== -->
+  <section id="t-sat" class="hide lock">
+    <div class="card">
+      <h2>Obloha</h2>
+      <canvas id="cvSky" height="340"></canvas>
+      <div class="legend" id="leg"></div>
+      <div class="mut">Plný bod = použitý ve výpočtu, prázdný = jen sledovaný.</div>
+    </div>
+    <div class="card">
+      <h2>Síla signálu C/N0 [dBHz]</h2>
+      <canvas id="cvCn" height="220"></canvas>
+      <div class="grid" style="margin-top:6px">
+        <div class="kv"><span>Sledováno</span><span id="sTr">-</span></div>
+        <div class="kv"><span>Použito</span><span id="sUs">-</span></div>
+        <div class="kv"><span>Průměr C/N0 použitých</span><span id="sCn">-</span></div>
+      </div>
+      <div class="grid" id="byConst" style="margin-top:6px"></div>
+    </div>
+  </section>
+
+  <!-- ===================== PROFILY ===================== -->
+  <section id="t-prof" class="hide lock">
+    <div class="card">
+      <h2>Profily</h2>
+      <div class="plist" id="plist"></div>
+      <div class="mut">● aktivní, ★ výchozí po startu. Krátký stisk tlačítka přepíná profily cyklicky.</div>
+    </div>
+    <div class="card" id="pform">
+      <h2>Nastavení profilu</h2>
+      <label>Název <input id="pName" maxlength="24" style="width:100%"></label>
+      <div class="row">
+        <label>Frekvence výstupu
+          <select id="pRate"><option value="1">1 Hz</option><option value="5">5 Hz</option><option value="10">10 Hz</option></select></label>
+        <label>Dynamický model
+          <select id="pDyn"><option value="pedestrian">chodec</option><option value="automotive">auto</option><option value="stationary">statika</option><option value="auto">automaticky (od kroku 6, zatím chodec)</option></select></label>
+        <label>Elevační maska [°] <input id="pElev" type="number" min="0" max="60" step="1"></label>
+      </div>
+      <div class="mut">Věty NMEA přes Bluetooth (GSA, GSV 1 Hz):</div>
+      <div class="row">
+        <label><input type="checkbox" id="nGGA"> GGA</label>
+        <label><input type="checkbox" id="nRMC"> RMC</label>
+        <label><input type="checkbox" id="nGST"> GST</label>
+        <label><input type="checkbox" id="nGSA"> GSA</label>
+        <label><input type="checkbox" id="nGSV"> GSV</label>
+      </div>
+      <label><input type="checkbox" id="pEkf"> EKF (GNSS + IMU) <span class="mut">– od kroku 6</span></label>
+      <label><input type="checkbox" id="pBuz"> Bzučák <span class="mut">– od kroku 4</span></label>
+      <label>Hlasitost <span id="pVolV"></span> % <input type="range" id="pVol" min="0" max="100"></label>
+      <label>Jas LED <span id="pLedV"></span> % <input type="range" id="pLed" min="0" max="100"></label>
+      <div class="mut">Anténa (test přesnosti, později geodetická tyč):</div>
+      <div class="row">
+        <label>Výška antény značka → ARP [m] <input id="pAntH" type="number" step="0.001" min="0" max="10"></label>
+        <label>Fázové centrum ARP → APC [m] <input id="pPco" type="number" step="0.001" min="-0.2" max="0.2"></label>
+      </div>
+      <div class="row">
+        <button class="pri" id="btnPSave">Uložit</button>
+        <button id="btnPAct">Aktivovat</button>
+        <button id="btnPDef">Výchozí po startu</button>
+      </div>
+      <div class="row">
+        <button id="btnPNew">Nový (kopie)</button>
+        <button class="dng" id="btnPDel">Smazat</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Export / import</h2>
+      <div class="row"><button id="btnExp">Export profilů (JSON)</button></div>
+      <div class="row"><input type="file" id="impFile" accept=".json,application/json"><button id="btnImp">Import</button></div>
+      <div class="mut">Import nahradí všechny profily.</div>
+    </div>
+  </section>
+
+  <!-- ===================== TEST ===================== -->
+  <section id="t-test" class="hide lock">
+    <div class="card">
+      <h2>Režim</h2>
+      <div class="mut">Bluetooth se při zapnuté Wi-Fi vypíná (oba se nevejdou do RAM) a po vypnutí Wi-Fi se znovu zapne – NTRIP přes BT tedy jen se zavřenou Wi-Fi. Wi-Fi se vypne tlačítkem „Uložit a vypnout Wi-Fi“ nebo podržením tlačítka přístroje 2 s – bez restartu, měření bodu pokračuje. Znovu zapnout: podržení tlačítka 2 s.</div>
+    </div>
+    <div class="card">
+      <h2>Kontrolní bod</h2>
+      <label>Bod pro test <select id="ptSel" style="width:100%"></select></label>
+      <div class="row">
+        <label>Název <input id="ptName" maxlength="24"></label>
+        <label>Druh <input id="ptTyp" maxlength="12" placeholder="TB, ZhB, nivelační…"></label>
+      </div>
+      <div class="row">
+        <label>Šířka φ ETRS89 <input id="ptLat" inputmode="decimal"></label>
+        <label>Délka λ ETRS89 <input id="ptLon" inputmode="decimal"></label>
+        <label>Výška h elips. [m] <input id="ptH" inputmode="decimal"></label>
+      </div>
+      <div class="row">
+        <label>S-JTSK Y [m] <input id="ptY" inputmode="decimal"></label>
+        <label>S-JTSK X [m] <input id="ptX" inputmode="decimal"></label>
+        <label>Výška Bpv [m] <input id="ptBpv" inputmode="decimal"></label>
+      </div>
+      <label>Poloha bodu <select id="ptPq" style="width:100%"><option value="0">přesná (ETRS89 z geodetických údajů)</option><option value="1">přibližná (přepočet ze S-JTSK, ±1 m)</option><option value="2">nevyhodnocovat (digitalizovaná „dig.“) – jen výška</option></select></label>
+      <label>Poznámka <input id="ptNote" maxlength="48" style="width:100%"></label>
+      <div class="mut">Úhel desetinně nebo ve stupních, minutách a vteřinách (49°55'9,8368", 49 55 9.8368). Prázdné φ, λ se dopočítá ze S-JTSK (7 parametrů, cca 0,5 m). Výška: elipsoidická h (Helips) má přednost; bez ní se Bpv porovnává s výškou nad geoidem z přijímače (geoid u-blox, ne kvazigeoid ČR).</div>
+      <div class="row"><button class="pri" id="btnPtSave">Uložit bod</button><button id="btnPtNew">Nový bod</button><button id="btnPtHere">Vložit aktuální polohu</button><button class="dng" id="btnPtDel">Smazat</button></div>
+      <label>Poloha z přijímače je v
+        <select id="ptFrame"><option value="auto">automaticky (RTCM z mobilu = ETRS89, jinak ITRF – i HAS)</option><option value="etrs">ETRS89 (RTK ze sítě v ČR)</option><option value="itrf">ITRF (HAS, bez korekcí)</option></select></label>
+      <div class="kv"><span>Anténa z profilu (výška + PCO)</span><span id="tAnt">-</span></div>
+      <div class="kv"><span>Posun ITRF → ETRS89 zde</span><span id="tShift">-</span></div>
+    </div>
+    <div class="card">
+      <h2>Odchylka od bodu</h2>
+      <div class="row"><span class="big" id="tD2">-</span><span id="tFix" class="mut"></span></div>
+      <div class="grid">
+        <div class="kv"><span>ΔN</span><span id="tN">-</span></div>
+        <div class="kv"><span>ΔE</span><span id="tE">-</span></div>
+        <div class="kv"><span id="tUl">ΔU</span><span id="tU">-</span></div>
+        <div class="kv"><span>hAcc / vAcc</span><span id="tAcc">-</span></div>
+        <div class="kv"><span>Chyba 2D / hAcc</span><span id="tRatio">-</span></div>
+      </div>
+      <canvas id="cvTest" height="300"></canvas>
+      <div class="row"><button id="btnTClr">Vymazat graf</button></div>
+      <div class="mut">Střed = kontrolní bod, kruh = aktuální hAcc. Chyba / hAcc trvale nad 2 znamená, že přijímač přesnost přeceňuje.</div>
+    </div>
+    <div class="card">
+      <h2>Měření bodu</h2>
+      <div class="row">
+        <label>Měřit <select id="mTgt"><option value="sel">vybraný bod (porovnání)</option><option value="new">nový bod</option><option value="none">bez bodu</option></select></label>
+        <label id="mNewL">Název nového bodu <input id="mNew" maxlength="24"></label>
+      </div>
+      <div class="row">
+        <label>Odpočet [s] <input id="mCd" type="number" min="0" max="300" value="15"></label>
+        <label>Ustálení max [s] <input id="mSmax" type="number" min="0" max="3600" value="900"></label>
+        <label>hAcc pod [m] <input id="mSacc" type="number" step="0.01" min="0" value="0"></label>
+        <label>Sběr [s] <input id="mDur" type="number" min="10" max="7200" value="300"></label>
+      </div>
+      <div class="mut">Odpočet = čas na položení a odstoupení. Ustálení čeká, až se poloha přestane posouvat: průměr posledních 30 s se proti průměru o minutu dřív posune o méně než 5 cm vodorovně a 8 cm svisle (nejdřív po 90 s; HAS po startu konverguje 10–30 min), případně i hAcc pod mezí; 0 = jen čekat na fix. Pak se 1× za sekundu ukládají polohy s fixem, odlehlé (&gt; 3σ) se vyřadí. Bzučák: 1× ustálení, 2× začátek sběru, dva tóny hotovo, 3× hluboký chyba. Měří přístroj i se zhasnutým mobilem. Krátký otřes (pták, vítr) jen vyřadí epochy během něj; souvislý pohyb déle než 3 s (zvednutí a odnesení) měření ukončí a uloží část před pohybem. Nový bod se uloží jako značka pod anténou (výška antény z profilu odečtena).</div>
+      <div class="row"><button class="pri" id="btnMStart">Start</button><button id="btnMFin">Ukončit a uložit</button><button class="dng" id="btnMCan">Zrušit</button></div>
+      <div class="grid">
+        <div class="kv"><span>Stav</span><span id="mSt">-</span></div>
+        <div class="kv"><span>Epoch</span><span id="mN">-</span></div>
+        <div class="kv"><span>σ N / E / U</span><span id="mSig">-</span></div>
+        <div class="kv"><span>RTK fix / float / HAS / kor.</span><span id="mRtk">-</span></div>
+        <div class="kv"><span>hAcc průměr</span><span id="mHa">-</span></div>
+      </div>
+      <div class="row"><button id="btnMRaw">Vzorky posledního měření (CSV)</button></div>
+    </div>
+    <div class="card">
+      <h2>Uložená měření</h2>
+      <label>Bod <select id="mlPt" style="width:100%"></select></label>
+      <div style="overflow-x:auto"><table id="mlTab"></table></div>
+      <div id="mlSum" class="mut"></div>
+      <div class="row"><button id="btnMlCsv">Export CSV</button><button class="dng" id="btnMlDel">Smazat měření bodu</button></div>
+      <div class="mut">Δ bod = průměr měření − souřadnice bodu (anténa odečtena, případně přepočet ITRF → ETRS89). Δ prům. = odchylka od průměru všech měření bodu (opakovatelnost). σ = rozptyl jednotlivých epoch.</div>
+    </div>
+    <div class="card">
+      <h2>Doba do fixu (TTFF)</h2>
+      <div class="row">
+        <label>Start <select id="tfKind"><option value="cold">studený</option><option value="warm">teplý</option><option value="hot">horký</option></select></label>
+        <label>Cíl <select id="tfGoal"><option value="fix">3D fix</option><option value="corr">korekce (HAS/DGNSS)</option><option value="float">RTK float</option><option value="rtk">RTK fix</option><option value="acc">přesnost</option></select></label>
+        <label>Přesnost [m] <input id="tfAcc" type="number" step="0.01" value="1"></label>
+      </div>
+      <div class="row">
+        <label>Opakování <input id="tfN" type="number" min="1" max="30" value="5"></label>
+        <label>Limit pokusu [s] <input id="tfTo" type="number" min="10" max="3600" value="300"></label>
+        <label>Pauza [s] <input id="tfPause" type="number" min="0" max="600" value="10"></label>
+      </div>
+      <div class="mut">Přesnost = 2D chyba vůči vybranému bodu (bez bodu podle hAcc). Test běží v přístroji i se zhasnutým mobilem.</div>
+      <div class="row"><button class="pri" id="btnTfStart">Spustit</button><button id="btnTfStop">Zastavit</button><button class="dng" id="btnTfClr">Smazat</button></div>
+      <div class="kv"><span>Stav</span><span id="tfSt">-</span></div>
+      <div style="overflow-x:auto"><table id="tfTab"></table></div>
+      <div style="overflow-x:auto"><table id="tfSum"></table></div>
+      <div class="row"><button id="btnTfCsv">Export CSV</button></div>
+    </div>
+  </section>
+
+  <!-- ===================== PŘÍSTROJ ===================== -->
+  <section id="t-dev" class="hide">
+    <div class="card lock norescue">
+      <h2>Wi-Fi a Bluetooth</h2>
+      <label>Heslo Wi-Fi (8–32 znaků) <input id="dPass" maxlength="32" style="width:100%"></label>
+      <label>Název Bluetooth a Wi-Fi <input id="dBt" maxlength="24" style="width:100%"></label>
+      <div class="row"><button class="pri" id="btnDSave">Uložit</button></div>
+      <div class="mut">Platí po restartu. Prázdný název = výchozí.</div>
+    </div>
+    <div class="card lock norescue">
+      <h2>Kalibrace</h2>
+      <div class="kv"><span>Baterie</span><span id="cBat">-</span></div>
+      <div class="row"><input id="cMv" type="text" inputmode="decimal" placeholder="změřené napětí, např. 3,86 V nebo 3860 mV"><button id="btnCBat">Kalibrovat baterii</button></div>
+      <div class="kv"><span>Bias gyra [°/s]</span><span id="cGyro">-</span></div>
+      <div class="row"><button id="btnCGyro">Kalibrovat gyro (3 s v klidu)</button></div>
+    </div>
+    <div class="card lock norescue">
+      <h2>Restart příjmu X20</h2>
+      <div class="mut">Horký = vše zachováno, teplý = bez efemerid, studený = bez almanachu, polohy a času. Nastavení X20 zůstane, doba do fixu se zobrazí ve Stavu.</div>
+      <div class="row"><button id="btnRH">Horký start</button><button id="btnRW">Teplý start</button><button class="dng" id="btnRC">Studený start</button></div>
+    </div>
+    <div class="card lock norescue">
+      <h2>Průchozí režim X20</h2>
+      <div class="mut">USB konektor se propojí přímo s UART1 X20 pro u-center. Wi-Fi a tato stránka běží dál. Ukončení tlačítkem zde, podržením tlačítka přístroje nebo vypnutím.</div>
+      <div class="row"><button id="btnBridge">Spustit průchozí režim</button></div>
+    </div>
+    <div class="card">
+      <h2>Firmware</h2>
+      <div class="mut">Oddíl <span id="part">-</span>. Nahrávání jen přes USB (OTA zrušeno).</div>
+    </div>
+  </section>
+</main>
+<div id="msg" class="hide"></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const CONST = {
+  0: {n: 'GPS', p: 'G', c: '#4ea1ff'},
+  1: {n: 'SBAS', p: 'S', c: '#9aa4ae'},
+  2: {n: 'Galileo', p: 'E', c: '#ffb83c'},
+  3: {n: 'BeiDou', p: 'C', c: '#ff5c7a'},
+  5: {n: 'QZSS', p: 'J', c: '#c38cff'},
+  6: {n: 'GLONASS', p: 'R', c: '#3ccf7a'},
+  7: {n: 'NavIC', p: 'I', c: '#3cd6d6'}
+};
+let S = null;          // poslední statistika
+let prev = null;       // předchozí statistika (rychlosti)
+let pts = [];          // body rozptylu
+let tab = 'stav';
+let prof = null;       // profily ze zařízení
+let sel = 0;           // vybraný profil
+let dev = null;
+let failCount = 0;
+
+function msg(t, ms) {
+  const m = $('msg');
+  m.textContent = t;
+  m.classList.remove('hide');
+  clearTimeout(msg.t);
+  msg.t = setTimeout(() => m.classList.add('hide'), ms || 3000);
+}
+
+async function api(path, opt) {
+  const r = await fetch(path, opt);
+  let j = null;
+  try { j = await r.json(); } catch (e) { j = null; }
+  if (!r.ok) throw new Error(j && j.err ? j.err : ('HTTP ' + r.status));
+  return j;
+}
+
+function postJson(path, obj) {
+  return api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(obj)});
+}
+
+function f(v, d, u) {
+  if (v === undefined || v === null || v === '') return '-';
+  return Number(v).toFixed(d) + (u ? ' ' + u : '');
+}
+
+function dur(ms) {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h + ' h ' + m + ' min ' + (s % 60) + ' s';
+}
+
+function bytes(n) {
+  if (n > 1e6) return (n / 1e6).toFixed(2) + ' MB';
+  if (n > 1e3) return (n / 1e3).toFixed(1) + ' kB';
+  return n + ' B';
+}
+
+// ---------------------------------------------------------------- záložky
+document.querySelectorAll('#tabs button').forEach(b => {
+  b.onclick = () => showTab(b.dataset.t);
+});
+
+function showTab(t) {
+  tab = t;
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t));
+  ['stav', 'sat', 'prof', 'test', 'dev'].forEach(x => $('t-' + x).classList.toggle('hide', x !== t));
+  if (t === 'prof' && !prof) loadProfiles();
+  if (t === 'test') loadPoints();
+  if (t === 'dev') loadDevice();
+  if (S) render();
+}
+
+// ---------------------------------------------------------------- statistika
+async function tick() {
+  try {
+    const j = await api('/api/stats');
+    prev = S;
+    S = j;
+    failCount = 0;
+    $('conn').textContent = 'připojeno';
+    collect();
+    render();
+    if (tab === 'test') await testTick();
+  } catch (e) {
+    failCount++;
+    if (failCount > 2) $('conn').textContent = 'spojení ztraceno';
+  }
+  setTimeout(tick, 1000);
+}
+
+function collect() {
+  const p = S.pvt;
+  if (!p || !p.ok || !p.fixOk || p.age > 2000) return;
+  if (prev && prev.pvt && prev.pvt.t === p.t) return;
+  pts.push({t: p.t || '', lat: p.lat, lon: p.lon, h: p.h, he: p.he, fix: p.fix, hAcc: p.hAcc, vAcc: p.vAcc, sv: p.sv});
+  if (pts.length > 3600) pts.shift();
+}
+
+function rate(get) {
+  if (!prev) return null;
+  const dt = (S.up - prev.up) / 1000;
+  if (dt <= 0) return null;
+  return (get(S) - get(prev)) / dt;
+}
+
+function render() {
+  document.body.classList.toggle('bridge', !!S.bridge);
+  $('bnBridge').classList.toggle('hide', !S.bridge);
+  $('brBaud').textContent = S.x20 ? S.x20.baud : '';
+  $('bnRescue').classList.toggle('hide', !S.rescue);
+  document.querySelectorAll('.norescue').forEach(e => e.classList.toggle('hide', !!S.rescue));
+  $('fw').textContent = S.fw;
+  $('part').textContent = S.part;
+  if (tab === 'stav') renderStav();
+  if (tab === 'sat') renderSat();
+}
+
+function renderStav() {
+  const p = S.pvt || {};
+  const fx = $('fix');
+  fx.textContent = p.ok ? p.fix : 'bez dat';
+  fx.className = 'big ' + (!p.ok || !p.fixOk ? 'fix0' : (p.cs === 2 ? 'fix2' : 'fix1'));
+  $('fixSub').textContent = p.ok ? ('data před ' + p.age + ' ms') : '';
+  $('sv').textContent = p.ok ? (p.sv + ' (sled. ' + S.sat.tr + ')') : '-';
+  $('hAcc').textContent = f(p.hAcc, 3, 'm');
+  $('vAcc').textContent = f(p.vAcc, 3, 'm');
+  const c = S.cov;
+  $('sNE').textContent = c ? (f(c.n, 3) + ' / ' + f(c.e, 3) + ' m' + (c.ok ? '' : ' (neplatná)')) : '-';
+  $('sD').textContent = c ? f(c.d, 3, 'm') : '-';
+  $('pdop').textContent = f(p.pdop, 2);
+  $('hvdop').textContent = S.dop ? (f(S.dop.h, 2) + ' / ' + f(S.dop.v, 2)) : '-';
+  $('corr').textContent = p.ok ? (p.corr ? ('≤ ' + p.corr + ' s') : 'žádné') : '-';
+  $('spd').textContent = p.ok ? f(p.gs * 3.6, 1, 'km/h') : '-';
+  $('hdg').textContent = f(p.hd, 1, '°');
+  $('lat').textContent = f(p.lat, 8, '°');
+  $('lon').textContent = f(p.lon, 8, '°');
+  $('h').textContent = f(p.h, 3, 'm');
+  $('he').textContent = f(p.he, 3, 'm');
+  $('utc').textContent = p.t || '-';
+  const x = S.x20;
+  $('ttff').textContent = x.rst ? (x.rst + ' před ' + f(x.rstAge / 1000, 0, 's') + ', fix ' + (x.ttff ? ('za ' + f(x.ttff / 1000, 1, 's')) : 'zatím ne')) : '-';
+
+  const g = S.gn;
+  $('uBaud').textContent = S.x20.baud + ' Bd';
+  const ur = rate(s => s.gn.bytes);
+  $('uRate').textContent = ur === null ? '-' : f(ur, 0, 'B/s');
+  $('ubx').textContent = g.ubxOk + ' / ' + g.ubxErr;
+  $('ubxAge').textContent = S.x20.ubxAge < 0 ? 'nikdy' : ('před ' + S.x20.ubxAge + ' ms');
+  $('reinit').textContent = g.reinit + '×';
+  const pr = rate(s => s.gn.pvt);
+  $('pvtHz').textContent = pr === null ? '-' : f(pr, 1, 'Hz');
+  $('pps').textContent = g.pps + (g.pps ? (' (perioda ' + f(g.ppsPer / 1e6, 6) + ' s)') : '');
+  $('ppsLat').textContent = f(g.lat / 1000, 1, 'ms');
+  const b = S.bt;
+  $('btCon').textContent = b.con + '× (párování ' + b.pairOk + '/' + b.pairFail + ')';
+  $('btTx').textContent = bytes(b.tx) + (b.drop ? (', zahozeno ' + b.drop) : '');
+  $('btRx').textContent = bytes(b.rx);
+  $('rtcm').textContent = b.rtcmOk + ' / ' + b.rtcmBad;
+  $('rtcmL').textContent = b.rtcmAge < 0 ? '-' : (b.rtcmType + ' před ' + f(b.rtcmAge / 1000, 0, 's'));
+
+  const m = S.imu;
+  $('imuSt').textContent = m.ok ? ('OK' + (m.rec ? ', sběrnice uvolněna' : '')) : 'nenalezeno';
+  $('imuOdr').textContent = m.ok ? f(m.odr, 1, 'Hz') : '-';
+  $('imuN').textContent = m.ok ? m.n : '-';
+  $('imuOvf').textContent = m.ok ? m.ovf : '-';
+  $('imuRe').textContent = m.ok ? m.re : '-';
+  $('imuErr').textContent = m.ok ? m.err : '-';
+  $('imuT').textContent = m.ok ? f(m.t, 1, '°C') : '-';
+
+  $('bat').textContent = S.bat.ok === false ? 'chyba měření (' + f(S.bat.v, 2, 'V') + ')' : f(S.bat.v, 2, 'V') + ' (' + S.bat.p + ' %)';
+  $('up').textContent = dur(S.up);
+  $('profN').textContent = (S.prof.i + 1) + '/' + S.prof.n + ' ' + S.prof.name;
+  $('fwE').textContent = S.fw + ' (' + S.part + ')';
+  $('fwX').textContent = S.x20.ok ? (S.x20.mod + ' ' + S.x20.fw) : 'neodpovídá';
+  $('heap').textContent = bytes(S.heap);
+  drawScatter();
+}
+
+// ---------------------------------------------------------------- kreslení
+function prepCanvas(cv) {
+  const r = window.devicePixelRatio || 1;
+  const w = cv.clientWidth;
+  // logická výška jen z původního atributu – cv.height se níž přepisuje na fyzické pixely
+  if (!cv.dataset.h) cv.dataset.h = cv.getAttribute('height');
+  const h = parseInt(cv.dataset.h, 10);
+  if (cv.width !== Math.round(w * r) || cv.height !== Math.round(h * r)) {
+    cv.width = Math.round(w * r);
+    cv.height = Math.round(h * r);
+    cv.style.height = h + 'px';
+  }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(r, 0, 0, r, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return {ctx, w, h};
+}
+
+function drawScatter() {
+  const {ctx, w, h} = prepCanvas($('cvSc'));
+  $('scN').textContent = pts.length;
+  if (pts.length < 2) {
+    ctx.fillStyle = '#8b98a6';
+    ctx.fillText('Čekám na body s fixem…', 10, 20);
+    ['scS', 'sc2', 'scC', 'scH'].forEach(i => { $(i).textContent = '-'; });
+    return;
+  }
+  let la = 0, lo = 0;
+  pts.forEach(p => { la += p.lat; lo += p.lon; });
+  la /= pts.length;
+  lo /= pts.length;
+  const kN = 111320, kE = 111320 * Math.cos(la * Math.PI / 180);
+  let sn = 0, se = 0, mx = 0.01, hMin = 1e9, hMax = -1e9;
+  const xy = pts.map(p => {
+    const n = (p.lat - la) * kN, e = (p.lon - lo) * kE;
+    sn += n * n;
+    se += e * e;
+    mx = Math.max(mx, Math.abs(n), Math.abs(e));
+    hMin = Math.min(hMin, p.h);
+    hMax = Math.max(hMax, p.h);
+    return [e, n];
+  });
+  sn = Math.sqrt(sn / pts.length);
+  se = Math.sqrt(se / pts.length);
+  $('scS').textContent = f(sn, 3) + ' / ' + f(se, 3) + ' m';
+  $('sc2').textContent = f(2 * Math.sqrt(sn * sn + se * se), 3, 'm');
+  $('scC').textContent = f(0.59 * (sn + se), 3, 'm');
+  $('scH').textContent = f(hMax - hMin, 3, 'm');
+
+  // měřítko na "hezké" číslo
+  const steps = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
+  let R = steps.find(s => s >= mx * 1.1) || mx;
+  const cx = w / 2, cy = h / 2, rad = Math.min(w, h) / 2 - 16, k = rad / R;
+  ctx.strokeStyle = '#2c3642';
+  ctx.fillStyle = '#8b98a6';
+  ctx.font = '12px system-ui';
+  for (let i = 1; i <= 2; i++) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad * i / 2, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.fillText((R * i / 2) + ' m', cx + rad * i / 2 + 2, cy - 2);
+  }
+  ctx.beginPath();
+  ctx.moveTo(cx - rad, cy); ctx.lineTo(cx + rad, cy);
+  ctx.moveTo(cx, cy - rad); ctx.lineTo(cx, cy + rad);
+  ctx.stroke();
+  ctx.fillText('S', cx + 4, cy - rad + 10);
+  xy.forEach((p, i) => {
+    const last = i === xy.length - 1;
+    ctx.fillStyle = last ? '#ffffff' : 'rgba(63,163,255,0.55)';
+    ctx.beginPath();
+    ctx.arc(cx + p[0] * k, cy - p[1] * k, last ? 4 : 2, 0, 2 * Math.PI);
+    ctx.fill();
+  });
+}
+
+function renderSat() {
+  const l = (S.sat && S.sat.l) || [];
+  $('sTr').textContent = S.sat.tr;
+  $('sUs').textContent = S.sat.us;
+  $('sCn').textContent = f(S.sat.cnoM, 1, 'dBHz');
+  // počty po konstelacích
+  const cnt = {};
+  l.forEach(s => {
+    const c = cnt[s[0]] || (cnt[s[0]] = {tr: 0, us: 0});
+    if (s[2] > 0) c.tr++;
+    if (s[5]) c.us++;
+  });
+  $('byConst').innerHTML = Object.keys(cnt).map(k => {
+    const c = CONST[k] || {n: '?', c: '#888'};
+    return '<div class="kv"><span><i style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + c.c + '"></i> ' + c.n + '</span><span>' + cnt[k].us + ' / ' + cnt[k].tr + '</span></div>';
+  }).join('');
+  $('leg').innerHTML = Object.keys(CONST).map(k => '<span><i style="background:' + CONST[k].c + '"></i>' + CONST[k].n + '</span>').join('');
+  drawSky(l);
+  drawCn(l);
+}
+
+function drawSky(l) {
+  const {ctx, w, h} = prepCanvas($('cvSky'));
+  const cx = w / 2, cy = h / 2, R = Math.min(w, h) / 2 - 18;
+  ctx.strokeStyle = '#2c3642';
+  ctx.fillStyle = '#8b98a6';
+  ctx.font = '12px system-ui';
+  [0, 30, 60].forEach(e => {
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * (90 - e) / 90, 0, 2 * Math.PI);
+    ctx.stroke();
+  });
+  ctx.beginPath();
+  ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+  ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
+  ctx.stroke();
+  ctx.fillText('S', cx - 4, cy - R - 4);
+  ctx.fillText('J', cx - 3, cy + R + 14);
+  ctx.fillText('V', cx + R + 4, cy + 4);
+  ctx.fillText('Z', cx - R - 14, cy + 4);
+  l.forEach(s => {
+    const el = s[3], az = s[4];
+    if (el < 0 || el > 90 || s[2] === 0) return;
+    const r = R * (90 - el) / 90, a = az * Math.PI / 180;
+    const x = cx + r * Math.sin(a), y = cy - r * Math.cos(a);
+    const c = (CONST[s[0]] || {c: '#888', p: '?'});
+    ctx.beginPath();
+    ctx.arc(x, y, 7, 0, 2 * Math.PI);
+    if (s[5]) { ctx.fillStyle = c.c; ctx.fill(); } else { ctx.strokeStyle = c.c; ctx.lineWidth = 2; ctx.stroke(); ctx.lineWidth = 1; }
+    ctx.fillStyle = '#e6ebf0';
+    ctx.font = '10px system-ui';
+    ctx.fillText(c.p + s[1], x + 9, y + 3);
+  });
+}
+
+function drawCn(l) {
+  const {ctx, w, h} = prepCanvas($('cvCn'));
+  const v = l.filter(s => s[2] > 0).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const top = 10, bot = h - 34, left = 26, maxC = 55;
+  ctx.strokeStyle = '#2c3642';
+  ctx.fillStyle = '#8b98a6';
+  ctx.font = '10px system-ui';
+  [10, 20, 30, 40, 50].forEach(c => {
+    const y = bot - (bot - top) * c / maxC;
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(w, y); ctx.stroke();
+    ctx.fillText(String(c), 4, y + 3);
+  });
+  if (!v.length) return;
+  const bw = (w - left) / v.length;
+  v.forEach((s, i) => {
+    const c = CONST[s[0]] || {c: '#888', p: '?'};
+    const bh = (bot - top) * Math.min(s[2], maxC) / maxC;
+    const x = left + i * bw;
+    ctx.globalAlpha = s[5] ? 1 : 0.35;
+    ctx.fillStyle = c.c;
+    ctx.fillRect(x + 1, bot - bh, Math.max(1, bw - 2), bh);
+    ctx.globalAlpha = 1;
+    ctx.save();
+    ctx.translate(x + bw / 2 + 3, h - 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = '#8b98a6';
+    ctx.fillText(c.p + s[1], 0, 0);
+    ctx.restore();
+  });
+}
+
+$('btnScClr').onclick = () => { pts = []; if (S) render(); };
+
+$('btnCsv').onclick = () => {
+  if (!pts.length) return msg('Žádné body');
+  const rows = ['cas_utc;lat;lon;h_msl;h_ell;fix;hAcc;vAcc;sv'];
+  pts.forEach(p => rows.push([p.t, p.lat, p.lon, p.h, p.he, p.fix, p.hAcc, p.vAcc, p.sv].join(';')));
+  download('rover-body.csv', rows.join('\r\n'), 'text/csv');
+};
+
+function download(name, text, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], {type: type}));
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+// ---------------------------------------------------------------- profily
+async function loadProfiles() {
+  try {
+    prof = await api('/api/profiles');
+    sel = prof.active;
+    showProfiles();
+  } catch (e) {
+    msg('Profily: ' + e.message);
+  }
+}
+
+function showProfiles() {
+  $('plist').innerHTML = '';
+  prof.profiles.forEach((p, i) => {
+    const b = document.createElement('button');
+    b.textContent = (i === prof.active ? '● ' : '○ ') + p.name + (i === prof.default ? ' ★' : '');
+    if (i === sel) b.classList.add('on');
+    b.onclick = () => { sel = i; showProfiles(); };
+    $('plist').appendChild(b);
+  });
+  const p = prof.profiles[sel];
+  $('pName').value = p.name;
+  $('pRate').value = String(p.rate);
+  $('pDyn').value = p.dyn;
+  $('pElev').value = p.elev;
+  $('nGGA').checked = p.nmea.gga;
+  $('nRMC').checked = p.nmea.rmc;
+  $('nGST').checked = p.nmea.gst;
+  $('nGSA').checked = p.nmea.gsa;
+  $('nGSV').checked = p.nmea.gsv;
+  $('pEkf').checked = p.ekf;
+  $('pBuz').checked = p.buzzer;
+  $('pVol').value = p.volume;
+  $('pLed').value = p.led;
+  $('pVolV').textContent = p.volume;
+  $('pLedV').textContent = p.led;
+  $('pAntH').value = p.antH;
+  $('pPco').value = p.pco;
+  $('btnPNew').disabled = prof.profiles.length >= prof.max;
+  $('btnPDel').disabled = prof.profiles.length <= 1;
+}
+
+$('pVol').oninput = () => { $('pVolV').textContent = $('pVol').value; };
+$('pLed').oninput = () => { $('pLedV').textContent = $('pLed').value; };
+
+function readForm() {
+  const p = prof.profiles[sel];
+  p.name = $('pName').value.trim();
+  p.rate = parseInt($('pRate').value, 10);
+  p.dyn = $('pDyn').value;
+  p.elev = parseInt($('pElev').value, 10);
+  p.nmea = {gga: $('nGGA').checked, rmc: $('nRMC').checked, gst: $('nGST').checked, gsa: $('nGSA').checked, gsv: $('nGSV').checked};
+  p.ekf = $('pEkf').checked;
+  p.buzzer = $('pBuz').checked;
+  p.volume = parseInt($('pVol').value, 10);
+  p.led = parseInt($('pLed').value, 10);
+  p.antH = parseFloat($('pAntH').value) || 0;
+  p.pco = parseFloat($('pPco').value) || 0;
+}
+
+async function saveProfiles(okText) {
+  try {
+    prof = await postJson('/api/profiles', {active: prof.active, default: prof.default, profiles: prof.profiles});
+    if (sel >= prof.profiles.length) sel = prof.profiles.length - 1;
+    showProfiles();
+    msg(okText || 'Uloženo');
+  } catch (e) {
+    msg('Chyba: ' + e.message, 5000);
+    loadProfiles();
+  }
+}
+
+$('btnPSave').onclick = () => { readForm(); saveProfiles('Profil uložen'); };
+$('btnPAct').onclick = () => { readForm(); prof.active = sel; saveProfiles('Profil aktivován'); };
+$('btnPDef').onclick = () => { readForm(); prof.default = sel; saveProfiles('Výchozí profil nastaven'); };
+$('btnPNew').onclick = () => {
+  readForm();
+  const c = JSON.parse(JSON.stringify(prof.profiles[sel]));
+  let base = c.name.slice(0, 18) + ' kopie', name = base, n = 2;
+  while (prof.profiles.some(p => p.name === name)) name = base.slice(0, 21) + ' ' + (n++);
+  c.name = name;
+  prof.profiles.push(c);
+  sel = prof.profiles.length - 1;
+  saveProfiles('Nový profil vytvořen');
+};
+$('btnPDel').onclick = () => {
+  if (prof.profiles.length <= 1) return;
+  if (!confirm('Smazat profil „' + prof.profiles[sel].name + '“?')) return;
+  prof.profiles.splice(sel, 1);
+  const fix = i => (i === sel ? 0 : (i > sel ? i - 1 : i));
+  prof.active = fix(prof.active);
+  prof.default = fix(prof.default);
+  sel = Math.min(sel, prof.profiles.length - 1);
+  saveProfiles('Profil smazán');
+};
+
+$('btnExp').onclick = () => {
+  if (!prof) return;
+  download('rover-profily.json', JSON.stringify({default: prof.default, profiles: prof.profiles}, null, 2), 'application/json');
+};
+
+$('btnImp').onclick = () => {
+  const file = $('impFile').files[0];
+  if (!file) return msg('Vyber soubor');
+  const rd = new FileReader();
+  rd.onload = async () => {
+    let j;
+    try { j = JSON.parse(rd.result); } catch (e) { return msg('Soubor není platný JSON'); }
+    try {
+      prof = await postJson('/api/profiles', {default: j.default || 0, active: j.default || 0, profiles: j.profiles});
+      sel = prof.active;
+      showProfiles();
+      msg('Profily importovány');
+    } catch (e) {
+      msg('Chyba: ' + e.message, 5000);
+    }
+  };
+  rd.readAsText(file);
+};
+
+// ---------------------------------------------------------------- přístroj
+async function loadDevice() {
+  try {
+    dev = await api('/api/device');
+    $('dPass').value = dev.apPass;
+    $('dBt').value = dev.btName;
+    $('dBt').placeholder = dev.btDefault;
+    $('cBat').textContent = (S ? f(S.bat.v, 3, 'V') : '-') + ', koeficient ' + dev.vcal;
+    $('cGyro').textContent = dev.gyroBias.join(' / ');
+  } catch (e) {
+    msg('Přístroj: ' + e.message);
+  }
+}
+
+$('btnDSave').onclick = async () => {
+  try {
+    await postJson('/api/device', {apPass: $('dPass').value, btName: $('dBt').value.trim()});
+    msg('Uloženo, platí po restartu');
+  } catch (e) {
+    msg('Chyba: ' + e.message, 5000);
+  }
+};
+
+$('btnCBat').onclick = async () => {
+  const mv = parseFloat(String($('cMv').value).replace(',', '.'));
+  if (!mv) return msg('Zadej napětí baterie (V nebo mV)');
+  try {
+    const j = await api('/api/cal/battery?mv=' + mv, {method: 'POST'});
+    $('cBat').textContent = f(j.v, 3, 'V') + ', koeficient ' + j.vcal;
+    msg('Kalibrace baterie uložena');
+  } catch (e) {
+    msg('Chyba: ' + e.message, 5000);
+  }
+};
+
+$('btnCGyro').onclick = async () => {
+  msg('Kalibrace gyra – nehýbej přístrojem 3 s…', 4000);
+  try {
+    const j = await api('/api/cal/gyro', {method: 'POST'});
+    $('cGyro').textContent = j.gyroBias.join(' / ');
+    msg('Bias gyra uložen');
+  } catch (e) {
+    msg('Chyba: ' + e.message, 5000);
+  }
+};
+
+async function bridge(on) {
+  try {
+    await api('/api/bridge?on=' + (on ? 1 : 0), {method: 'POST'});
+    msg(on ? 'Průchozí režim spuštěn' : 'Průchozí režim ukončen, X20 se znovu nastavuje');
+  } catch (e) {
+    msg('Chyba: ' + e.message, 5000);
+  }
+}
+async function x20reset(k, name) {
+  if (k === 'cold' && !confirm('Studený start – fix může trvat i několik minut. Pokračovat?')) return;
+  try {
+    await api('/api/x20reset?k=' + k, {method: 'POST'});
+    msg(name + ' start X20 odeslán');
+  } catch (e) {
+    msg('Chyba: ' + e.message, 5000);
+  }
+}
+$('btnRH').onclick = () => x20reset('hot', 'Horký');
+$('btnRW').onclick = () => x20reset('warm', 'Teplý');
+$('btnRC').onclick = () => x20reset('cold', 'Studený');
+$('btnBridge').onclick = () => bridge(true);
+$('btnBridgeStop').onclick = () => bridge(false);
+
+$('btnExit').onclick = async () => {
+  if (!confirm('Vypnout Wi-Fi? Bluetooth se zapne, případné měření běží dál. Znovu zapnout Wi-Fi: podržení tlačítka přístroje 2 s.')) return;
+  let r = null;
+  try {
+    r = await api('/api/restart', {method: 'POST'});
+  } catch (e) {
+    // spojení se mohlo přerušit
+  }
+  msg(r && r.restart ? 'Restart kvůli změně nastavení Wi-Fi/BT…' : 'Wi-Fi se vypíná.', 10000);
+};
+
+// ---------------------------------------------------------------- test přesnosti
+let PT = null;        // body z přístroje {sel, frame, points}
+let T = null;         // stav testu
+let tPts = [];        // body grafu odchylek
+let tLastT = '';
+let ptEdit = -1;      // upravovaný bod (-1 = nový)
+let ptDirty = false;  // formulář bodu má neuložené změny
+
+// úhel desetinně nebo ve stupních, minutách, vteřinách s libovolnými oddělovači (49°55'9,8368", 49 55 9.8368)
+function parseAngle(v) {
+  v = String(v).trim().replace(/,/g, '.');
+  if (!v) return NaN;
+  const m = v.match(/\d+(?:\.\d+)?/g);
+  if (!m || m.length > 3) return NaN;
+  const [d, mi = 0, s = 0] = m.map(Number);
+  if (m.length > 1 && (d % 1 || mi >= 60 || s >= 60)) return NaN;
+  const r = d + mi / 60 + s / 3600;
+  return v.startsWith('-') ? -r : r;
+}
+
+function cm(v) {
+  if (v === undefined || v === null) return '-';
+  v = Number(v);
+  return Math.abs(v) < 1 ? (v * 100).toFixed(1) + ' cm' : v.toFixed(3) + ' m';
+}
+
+// S-JTSK (Křovák, kladné Y, X) -> ETRS89 φ, λ [°]; Bessel -> GRS80 7 parametry (přesnost cca 0,5 m)
+function jtskToEtrs(Y, X, H) {
+  const a = 6377397.15508, e = 0.081696831215303, n = 0.97992470462083, rho0 = 12310230.12797036;
+  const sinUQ = 0.863499969506341, cosUQ = 0.504348889819882, sinVQ = 0.420215144586493, cosVQ = 0.907424504992097;
+  const alfa = 1.000597498371542, k = 1.003419163966575;
+  const ro = Math.hypot(X, Y), D = 2 * Math.atan(Y / (ro + X)) / n;
+  const S = 2 * Math.atan(Math.exp(Math.log(rho0 / ro) / n)) - Math.PI / 2;
+  const sinS = Math.sin(S), cosS = Math.cos(S);
+  const sinU = sinUQ * sinS - cosUQ * cosS * Math.cos(D), cosU = Math.sqrt(1 - sinU * sinU);
+  const sinDV = Math.sin(D) * cosS / cosU, cosDV = Math.sqrt(1 - sinDV * sinDV);
+  const sinV = sinVQ * cosDV - cosVQ * sinDV, cosV = cosVQ * cosDV + sinVQ * sinDV;
+  const L = 2 * Math.atan(sinV / (1 + cosV)) / alfa;
+  const t = Math.exp(2 / alfa * Math.log((1 + sinU) / cosU / k));
+  let p = (t - 1) / (t + 1), q;
+  do { q = p; p = t * Math.exp(e * Math.log((1 + e * q) / (1 - e * q))); p = (p - 1) / (p + 1); } while (Math.abs(p - q) > 1e-15);
+  const B = Math.atan(p / Math.sqrt(1 - p * p));
+  const e2 = e * e, N = a / Math.sqrt(1 - e2 * Math.sin(B) ** 2);
+  const x = (N + H) * Math.cos(B) * Math.cos(L), y = (N + H) * Math.cos(B) * Math.sin(L), z = (N * (1 - e2) + H) * Math.sin(B);
+  const as = Math.PI / 648000, m = 1 + 3.5623e-6, wx = 4.9984 * as, wy = 1.5867 * as, wz = 5.2611 * as;
+  const X2 = 570.8285 + m * (x - wz * y + wy * z), Y2 = 85.6769 + m * (wz * x + y - wx * z), Z2 = 462.842 + m * (-wy * x + wx * y + z);
+  const A = 6378137, F = 1 / 298.257222101, E2 = F * (2 - F), pp = Math.hypot(X2, Y2);
+  let la = Math.atan2(Z2, pp * (1 - E2));
+  for (let i = 0; i < 6; i++) {
+    const Nn = A / Math.sqrt(1 - E2 * Math.sin(la) ** 2);
+    la = Math.atan2(Z2, pp * (1 - E2 * Nn / (Nn + pp / Math.cos(la) - Nn)));
+  }
+  return [la * 180 / Math.PI, Math.atan2(Y2, X2) * 180 / Math.PI];
+}
+
+async function loadPoints() {
+  try {
+    PT = await api('/api/points');
+    fillPoints();
+  } catch (e) {
+    msg('Body: ' + e.message);
+  }
+}
+
+const vs = v => (v === null || v === undefined ? '' : v);
+
+function fillForm(p) {
+  $('ptName').value = p ? p.name : '';
+  $('ptTyp').value = p ? p.typ : '';
+  $('ptLat').value = p ? vs(p.lat) : '';
+  $('ptLon').value = p ? vs(p.lon) : '';
+  $('ptH').value = p ? vs(p.h) : '';
+  $('ptY').value = p ? vs(p.y) : '';
+  $('ptX').value = p ? vs(p.x) : '';
+  $('ptBpv').value = p ? vs(p.bpv) : '';
+  $('ptPq').value = String(p ? p.pq : 0);
+  $('ptNote').value = p ? p.pozn : '';
+  ptDirty = false;
+}
+
+function fillPoints() {
+  const s = $('ptSel');
+  s.innerHTML = '';
+  if (!PT.points.length) {
+    const o = document.createElement('option');
+    o.value = '-1';
+    o.textContent = '— žádný bod —';
+    s.appendChild(o);
+  }
+  PT.points.forEach((p, i) => {
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = p.name + (p.typ ? ' (' + p.typ + ')' : '');
+    s.appendChild(o);
+  });
+  s.value = String(PT.sel);
+  ptEdit = PT.sel;
+  fillForm(PT.points[PT.sel]);
+  $('ptFrame').value = PT.frame;
+  $('btnPtDel').disabled = PT.sel < 0;
+  $('btnPtNew').disabled = PT.points.length >= PT.max;
+}
+
+async function savePoints(okText) {
+  try {
+    PT = await postJson('/api/points', {sel: PT.sel, frame: PT.frame, points: PT.points});
+    fillPoints();
+    tPts = [];
+    msg(okText || 'Uloženo');
+    return true;
+  } catch (e) {
+    msg('Chyba: ' + e.message, 5000);
+    loadPoints();
+    return false;
+  }
+}
+
+function numField(id) {
+  const v = String($(id).value).trim().replace(/,/g, '.');
+  return v === '' ? null : Number(v);
+}
+
+function readPoint() {
+  const p = {name: $('ptName').value.trim(), typ: $('ptTyp').value.trim(), pozn: $('ptNote').value.trim(), pq: parseInt($('ptPq').value, 10),
+    h: numField('ptH'), bpv: numField('ptBpv'), y: numField('ptY'), x: numField('ptX')};
+  if (!p.name) { msg('Zadej název bodu'); return null; }
+  if ([p.h, p.bpv, p.y, p.x].some(v => v !== null && !isFinite(v))) { msg('Neplatné číslo ve výšce nebo S-JTSK'); return null; }
+  if (p.y !== null) p.y = Math.abs(p.y);
+  if (p.x !== null) p.x = Math.abs(p.x);
+  if (p.y && p.x && p.y > p.x) { const t = p.y; p.y = p.x; p.x = t; msg('Y a X prohozeny (v ČR je Y < X)'); }
+  let lat = $('ptLat').value.trim() ? parseAngle($('ptLat').value) : null;
+  let lon = $('ptLon').value.trim() ? parseAngle($('ptLon').value) : null;
+  if (lat === null || lon === null) {
+    if (!p.y || !p.x) { msg('Zadej φ, λ nebo S-JTSK Y, X'); return null; }
+    [lat, lon] = jtskToEtrs(p.y, p.x, (p.bpv ?? 500) + 45);
+    if (p.pq === 0) p.pq = 1;
+    msg('φ, λ dopočteny ze S-JTSK – poloha bodu přibližná', 5000);
+  }
+  if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) { msg('Neplatná šířka nebo délka'); return null; }
+  p.lat = Number(lat.toFixed(9));
+  p.lon = Number(lon.toFixed(9));
+  return p;
+}
+
+['ptName', 'ptTyp', 'ptLat', 'ptLon', 'ptH', 'ptY', 'ptX', 'ptBpv', 'ptPq', 'ptNote'].forEach(id => {
+  $(id).addEventListener('input', () => { ptDirty = true; });
+});
+
+$('ptSel').onchange = () => {
+  if (ptDirty && !confirm('Neuložené změny bodu zahodit?')) { $('ptSel').value = String(PT.sel); return; }
+  PT.sel = parseInt($('ptSel').value, 10);
+  savePoints('Bod vybrán');
+};
+$('ptFrame').onchange = () => { PT.frame = $('ptFrame').value; savePoints('Uloženo'); };
+$('btnPtSave').onclick = () => {
+  const p = readPoint();
+  if (!p) return;
+  if (ptEdit >= 0) PT.points[ptEdit] = p;
+  else { PT.points.push(p); PT.sel = PT.points.length - 1; }
+  savePoints('Bod uložen');
+};
+$('btnPtNew').onclick = () => {
+  if (ptDirty && !confirm('Neuložené změny bodu zahodit?')) return;
+  let n = PT.points.length + 1;
+  while (PT.points.some(p => p.name === 'Bod ' + n)) n++;
+  ptEdit = -1;
+  fillForm(null);
+  $('ptName').value = 'Bod ' + n;
+  ptDirty = true;
+  msg('Nový bod – vyplň údaje a ulož');
+};
+$('btnPtHere').onclick = () => {
+  const v = S && S.pvt && S.pvt.ok && S.pvt.fixOk ? S.pvt : null;
+  if (!v) return msg('Bez fixu');
+  const ant = T ? Number(T.antH) + Number(T.pco) : 0;
+  $('ptLat').value = v.lat;
+  $('ptLon').value = v.lon;
+  $('ptH').value = (Number(v.he) - ant).toFixed(3);
+  ptDirty = true;
+  msg('Okamžitá poloha (hAcc ' + cm(v.hAcc) + ', anténa odečtena). Přesněji: Měření bodu → nový bod.', 6000);
+};
+$('btnPtDel').onclick = () => {
+  if (PT.sel < 0) return;
+  if (!confirm('Smazat bod „' + PT.points[PT.sel].name + '“? Uložená měření bodu zůstanou.')) return;
+  PT.points.splice(PT.sel, 1);
+  PT.sel = PT.points.length ? 0 : -1;
+  savePoints('Bod smazán');
+};
+
+async function testTick() {
+  T = await api('/api/test');
+  renderTest();
+  await measTick();
+}
+
+function renderTest() {
+  $('tAnt').textContent = (Number(T.antH) + Number(T.pco)).toFixed(3) + ' m (' + T.antH + ' + ' + T.pco + ')';
+  $('tShift').textContent = 'N ' + cm(T.shift.n) + ', E ' + cm(T.shift.e);
+  const d = T.d;
+  const fl = d.f || 0, hor = !!(fl & 1);
+  $('tFix').textContent = d.fix + ', SV ' + d.sv + (d.ok ? ((fl & 8) ? ', poloha přepočtena ITRF → ETRS89' : ', bez přepočtu') + ((fl & 16) ? ', bod přibližně' : '') : '');
+  $('tUl').textContent = (fl & 2) ? 'ΔU (h elips.)' : (fl & 4) ? 'ΔU (Bpv, geoid u-blox)' : 'ΔU';
+  if (!d.ok) {
+    $('tD2').textContent = T.point ? 'bez polohy' : 'vyber bod';
+    ['tN', 'tE', 'tU', 'tRatio'].forEach(i => { $(i).textContent = '-'; });
+  } else {
+    $('tD2').textContent = hor ? cm(d.d2) : 'poloha bodu se nevyhodnocuje';
+    $('tD2').className = (hor ? 'big ' : '') + (!d.fixOk ? 'fix0' : (d.cs === 2 ? 'fix2' : 'fix1'));
+    $('tN').textContent = hor ? cm(d.n) : '-';
+    $('tE').textContent = hor ? cm(d.e) : '-';
+    $('tU').textContent = (fl & 6) ? cm(d.u) : '-';
+    $('tRatio').textContent = hor && Number(d.hAcc) > 0 ? (Number(d.d2) / Number(d.hAcc)).toFixed(2) : '-';
+    if (hor && d.fixOk && d.t !== tLastT) {
+      tLastT = d.t;
+      tPts.push([Number(d.e), Number(d.n)]);
+      if (tPts.length > 3600) tPts.shift();
+    }
+  }
+  $('tAcc').textContent = cm(d.hAcc) + ' / ' + cm(d.vAcc);
+  drawTest(Number(d.hAcc));
+
+  const t = T.ttff;
+  const KIND = {hot: 'horký', warm: 'teplý', cold: 'studený'};
+  let st = {idle: 'nespuštěno', done: 'hotovo'}[t.state] || '';
+  if (t.state === 'run') st = 'pokus ' + (t.runs.length + 1) + '/' + t.count + ' (' + KIND[t.kind] + '), běží ' + f(t.elapsed / 1000, 0, 's');
+  if (t.state === 'pause') st = 'pauza, pokus ' + (t.runs.length + 1) + '/' + t.count + ' za ' + f(Math.max(0, t.next) / 1000, 0, 's');
+  $('tfSt').textContent = st;
+  const sec = v => (v ? (v / 1000).toFixed(1) : '-');
+  let h = '<tr><th>#</th><th>Start</th><th>3D fix</th><th>Korekce</th><th>Float</th><th>RTK fix</th><th>Přesnost</th><th></th></tr>';
+  t.runs.forEach((r, i) => {
+    h += '<tr><td>' + (i + 1) + '</td><td>' + KIND[r[0]] + '</td><td>' + sec(r[1]) + '</td><td>' + sec(r[2]) + '</td><td>' + sec(r[3]) + '</td><td>' + sec(r[4]) + '</td><td>' + sec(r[5]) + '</td><td>' + (r[6] ? 'limit' : '') + '</td></tr>';
+  });
+  $('tfTab').innerHTML = t.runs.length ? h : '';
+  if (t.runs.length) {
+    const names = ['3D fix', 'Korekce', 'Float', 'RTK fix', 'Přesnost'];
+    let sh = '<tr><th>[s]</th><th>min</th><th>medián</th><th>max</th><th>dosaženo</th></tr>';
+    names.forEach((n, k) => {
+      const v = t.runs.map(r => r[k + 1]).filter(x => x > 0).sort((x, y) => x - y);
+      if (!v.length) return;
+      const med = v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2;
+      sh += '<tr><td>' + n + '</td><td>' + sec(v[0]) + '</td><td>' + sec(med) + '</td><td>' + sec(v[v.length - 1]) + '</td><td>' + v.length + '/' + t.runs.length + '</td></tr>';
+    });
+    $('tfSum').innerHTML = sh;
+  } else {
+    $('tfSum').innerHTML = '';
+  }
+  $('btnTfStart').disabled = t.state === 'run' || t.state === 'pause';
+}
+
+function drawTest(hAcc) {
+  const {ctx, w, h} = prepCanvas($('cvTest'));
+  const cx = w / 2, cy = h / 2, rad = Math.min(w, h) / 2 - 16;
+  let mx = 0.02;
+  tPts.forEach(p => { mx = Math.max(mx, Math.abs(p[0]), Math.abs(p[1])); });
+  if (hAcc > 0 && hAcc < 1000) mx = Math.max(mx, hAcc);
+  const steps = [0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
+  const R = steps.find(s => s >= mx * 1.1) || mx;
+  const k = rad / R;
+  ctx.strokeStyle = '#2c3642';
+  ctx.fillStyle = '#8b98a6';
+  ctx.font = '12px system-ui';
+  for (let i = 1; i <= 2; i++) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad * i / 2, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.fillText(cm(R * i / 2), cx + rad * i / 2 + 2, cy - 2);
+  }
+  ctx.beginPath();
+  ctx.moveTo(cx - rad, cy); ctx.lineTo(cx + rad, cy);
+  ctx.moveTo(cx, cy - rad); ctx.lineTo(cx, cy + rad);
+  ctx.stroke();
+  ctx.fillText('S', cx + 4, cy - rad + 10);
+  if (hAcc > 0 && hAcc * k < rad * 1.5) {
+    ctx.strokeStyle = 'rgba(240,180,60,0.8)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, hAcc * k, 0, 2 * Math.PI);
+    ctx.stroke();
+  }
+  tPts.forEach((p, i) => {
+    const last = i === tPts.length - 1;
+    ctx.fillStyle = last ? '#ffffff' : 'rgba(63,163,255,0.55)';
+    ctx.beginPath();
+    ctx.arc(cx + p[0] * k, cy - p[1] * k, last ? 4 : 2, 0, 2 * Math.PI);
+    ctx.fill();
+  });
+  ctx.fillStyle = '#ff5c5c';
+  ctx.fillRect(cx - 3, cy - 3, 6, 6);
+}
+
+$('btnTClr').onclick = () => { tPts = []; if (T) renderTest(); };
+
+async function testCmd(path, okText) {
+  try {
+    await api(path, {method: 'POST'});
+    if (okText) msg(okText);
+    await testTick();
+  } catch (e) {
+    msg('Chyba: ' + e.message, 5000);
+  }
+}
+$('btnTfStart').onclick = () => {
+  const q = 'cmd=start&kind=' + $('tfKind').value + '&goal=' + $('tfGoal').value + '&acc=' + encodeURIComponent($('tfAcc').value) +
+    '&n=' + encodeURIComponent($('tfN').value) + '&timeout=' + encodeURIComponent($('tfTo').value) + '&pause=' + encodeURIComponent($('tfPause').value);
+  testCmd('/api/test/ttff?' + q, 'Test spuštěn');
+};
+$('btnTfStop').onclick = () => testCmd('/api/test/ttff?cmd=stop', 'Test zastaven');
+$('btnTfClr').onclick = () => testCmd('/api/test/ttff?cmd=clear', 'Smazáno');
+
+$('btnTfCsv').onclick = () => {
+  if (!T || !T.ttff.runs.length) return msg('Žádné výsledky');
+  const s = v => (v ? (v / 1000).toFixed(1) : '');
+  const rows = ['pokus;start;fix3d_s;korekce_s;float_s;rtkfix_s;presnost_s;limit'];
+  T.ttff.runs.forEach((r, i) => rows.push([i + 1, r[0], s(r[1]), s(r[2]), s(r[3]), s(r[4]), s(r[5]), r[6]].join(';')));
+  download('rover-ttff.csv', rows.join('\r\n'), 'text/csv');
+};
+
+// ---------------------------------------------------------------- měření bodu
+let M = null;         // stav měření
+let ML = null;        // uložená měření
+let mlVer = 0;
+
+(function loadMeasCfg() {
+  try {
+    const c = JSON.parse(localStorage.getItem('measCfg') || 'null');
+    if (c) ['mCd', 'mSmax', 'mSacc', 'mDur', 'mTgt'].forEach(id => { if (c[id] !== undefined) $(id).value = c[id]; });
+  } catch (e) { /* bez uložení */ }
+})();
+
+function mTgtChanged() { $('mNewL').classList.toggle('hide', $('mTgt').value !== 'new'); }
+$('mTgt').onchange = mTgtChanged;
+mTgtChanged();
+
+async function measTick() {
+  M = await api('/api/meas');
+  if (M.ver !== mlVer) {
+    ML = await api('/api/meas/list');
+    const first = mlVer === 0;
+    mlVer = ML.ver;
+    fillMlPts();
+    if (!first && !ptDirty) loadPoints();  // měření mohlo založit nový bod
+  }
+  renderMeas();
+}
+
+function renderMeas() {
+  const st = M.st;
+  let t = {idle: 'nespuštěno', done: 'hotovo – uloženo', failed: 'chyba'}[st] || '';
+  const tgt = M.new ? 'nový bod ' + M.new : (M.pt ? 'bod ' + M.pt : 'bez bodu');
+  if (st === 'countdown') t = 'odpočet ' + M.left + ' s (' + tgt + ')';
+  if (st === 'settle') t = 'ustálení ' + M.el + (M.max ? ' / ' + M.max : '') + ' s, hAcc ' + cm(M.hAcc) +
+    (M.need ? ', první vyhodnocení za ' + M.need + ' s' : (M.drH !== undefined ? ', posun za minutu ' + cm(M.drH) + ' / ' + cm(M.drU) + ' (cíl < 5 / 8 cm)' : ''));
+  if (st === 'collect') t = 'sběr ' + M.el + ' / ' + M.dur + ' s (' + tgt + ')' + (M.every > 1 ? ', ukládá se každá ' + M.every + '. s' : '');
+  if (M.msg) t += ' – ' + M.msg;
+  $('mSt').textContent = t;
+  const has = (st === 'collect' || st === 'done') && M.n !== undefined;
+  $('mN').textContent = has ? M.n + (M.rej ? ', odlehlých ' + M.rej : '') + (M.mr ? ', při pohybu ' + M.mr : '') + (M.nf ? ', bez fixu ' + M.nf : '') +
+    (M.mot ? ', otřesů ' + M.mot : '') +
+    ', ustálení ' + M.settle + ' s' + (M.sto ? ' (limit)' : '') : '-';
+  $('mSig').textContent = has ? cm(M.sN) + ' / ' + cm(M.sE) + ' / ' + cm(M.sU) : '-';
+  $('mRtk').textContent = has ? M.fx + ' / ' + M.fl + ' / ' + (M.hs || 0) + ' / ' + M.df : '-';
+  $('mHa').textContent = has ? cm(M.ha) : '-';
+  const run = st === 'countdown' || st === 'settle' || st === 'collect';
+  $('btnMStart').disabled = run;
+  $('btnMFin').disabled = st !== 'collect';
+  $('btnMCan').disabled = !run;
+  $('btnMRaw').disabled = !M.raw;
+}
+
+$('btnMStart').onclick = async () => {
+  const tgt = $('mTgt').value;
+  let q = 'cd=' + encodeURIComponent($('mCd').value) + '&smax=' + encodeURIComponent($('mSmax').value) +
+    '&sacc=' + encodeURIComponent(String($('mSacc').value).replace(',', '.')) + '&dur=' + encodeURIComponent($('mDur').value);
+  if (tgt === 'sel') {
+    if (!PT || PT.sel < 0) return msg('Vyber bod, nebo zvol „nový bod“ / „bez bodu“');
+    q += '&pt=' + encodeURIComponent(PT.points[PT.sel].name);
+  } else if (tgt === 'new') {
+    const n = $('mNew').value.trim();
+    if (!n) return msg('Zadej název nového bodu');
+    q += '&new=' + encodeURIComponent(n);
+  }
+  try {
+    localStorage.setItem('measCfg', JSON.stringify({mCd: $('mCd').value, mSmax: $('mSmax').value, mSacc: $('mSacc').value, mDur: $('mDur').value, mTgt: tgt}));
+  } catch (e) { /* bez uložení */ }
+  try {
+    await api('/api/meas/start?' + q, {method: 'POST'});
+    msg('Měření spuštěno – polož přístroj a odstup');
+    await measTick();
+  } catch (e) {
+    msg('Chyba: ' + e.message, 5000);
+  }
+};
+$('btnMFin').onclick = () => testCmd('/api/meas/stop?cmd=finish', 'Měření ukončeno');
+$('btnMCan').onclick = () => { if (confirm('Zrušit měření bez uložení?')) testCmd('/api/meas/stop?cmd=cancel', 'Měření zrušeno'); };
+$('btnMRaw').onclick = () => { location.href = '/api/meas/raw'; };
+
+function fillMlPts() {
+  const s = $('mlPt'), old = s.value;
+  const names = [...new Set(ML.meas.map(m => m.pt))];
+  s.innerHTML = '<option value="*">všechny (' + ML.meas.length + '/' + ML.max + ')</option>' +
+    names.map(n => '<option value="' + encodeURIComponent(n) + '">' + (n ? escHtml(n) : '— bez bodu —') + '</option>').join('');
+  s.value = [...s.options].some(o => o.value === old) ? old : '*';
+  renderMl();
+}
+
+function escHtml(t) {
+  return String(t).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+}
+
+// odchylky měření od průměru všech měření téhož bodu (opakovatelnost)
+function mlRows() {
+  const sel = $('mlPt').value;
+  const rows = ML.meas.filter(m => sel === '*' || encodeURIComponent(m.pt) === sel);
+  const grp = {};
+  ML.meas.forEach(m => { (grp[m.pt] = grp[m.pt] || []).push(m); });
+  return rows.map(m => {
+    const g = grp[m.pt];
+    let r = null;
+    if (m.pt && g.length > 1) {
+      const la = g.reduce((s, x) => s + Number(x.lat), 0) / g.length;
+      const lo = g.reduce((s, x) => s + Number(x.lon), 0) / g.length;
+      const hh = g.reduce((s, x) => s + Number(x.he) - Number(x.ant), 0) / g.length;
+      const kN = 111132.954 - 559.822 * Math.cos(2 * la * Math.PI / 180);
+      const kE = 111412.84 * Math.cos(la * Math.PI / 180);
+      const dn = (Number(m.lat) - la) * kN, de = (Number(m.lon) - lo) * kE;
+      r = {n: dn, e: de, d2: Math.hypot(dn, de), u: Number(m.he) - Number(m.ant) - hh};
+    }
+    return {m, r};
+  });
+}
+
+function renderMl() {
+  if (!ML) return;
+  const rows = mlRows();
+  let h = '<tr><th>Bod / č.</th><th>Začátek UTC</th><th>Sběr</th><th>Epoch</th><th>Δ bod N</th><th>E</th><th>U</th><th>2D</th>' +
+    '<th>Δ prům. 2D</th><th>U</th><th>σN</th><th>σE</th><th>σU</th><th>CEP95</th><th>hAcc</th><th>fix/float/HAS/kor</th><th></th></tr>';
+  rows.forEach(({m, r}) => {
+    const d = m.d, df = d ? d.f : 0;
+    h += '<tr><td>' + escHtml(m.pt || '—') + ' / ' + m.no + '</td><td>' + m.t + '</td><td>' + m.dur + ' s' + (m.end === 2 ? ' odnes.' : m.end === 1 ? ' ruč.' : '') +
+      '</td><td>' + m.n + (m.rej + m.mr ? ' (−' + (m.rej + m.mr) + ')' : '') +
+      '</td><td>' + (df & 1 ? cm(d.n) : '-') + '</td><td>' + (df & 1 ? cm(d.e) : '-') + '</td><td>' + (df & 6 ? cm(d.u) + (df & 4 ? ' Bpv' : '') : '-') +
+      '</td><td>' + (df & 1 ? cm(d.d2) + (df & 16 ? ' ≈' : '') : '-') + '</td><td>' + (r ? cm(r.d2) : '-') + '</td><td>' + (r ? cm(r.u) : '-') +
+      '</td><td>' + cm(m.sN) + '</td><td>' + cm(m.sE) + '</td><td>' + cm(m.sU) + '</td><td>' + cm(m.c95) + '</td><td>' + cm(m.ha) +
+      '</td><td>' + m.fx + '/' + m.fl + '/' + (m.hs || 0) + '/' + m.df + '</td><td><button data-mid="' + m.id + '" title="Smazat">×</button></td></tr>';
+  });
+  $('mlTab').innerHTML = rows.length ? h : '';
+  $('mlTab').querySelectorAll('button[data-mid]').forEach(b => {
+    b.onclick = async () => {
+      if (!confirm('Smazat měření?')) return;
+      await testCmd('/api/meas/del?id=' + b.dataset.mid, 'Smazáno');
+    };
+  });
+  const sel = $('mlPt').value;
+  const withR = rows.filter(x => x.r);
+  if (sel !== '*' && withR.length > 1) {
+    const r2 = Math.sqrt(withR.reduce((s, x) => s + x.r.d2 * x.r.d2, 0) / withR.length);
+    const ru = Math.sqrt(withR.reduce((s, x) => s + x.r.u * x.r.u, 0) / withR.length);
+    $('mlSum').textContent = 'Opakovatelnost (' + withR.length + ' měření): RMS 2D ' + cm(r2) + ', RMS U ' + cm(ru);
+  } else {
+    $('mlSum').textContent = '';
+  }
+  $('btnMlDel').disabled = sel === '*';
+}
+$('mlPt').onchange = renderMl;
+
+$('btnMlDel').onclick = () => {
+  const pt = decodeURIComponent($('mlPt').value);
+  if (!confirm('Smazat všechna měření bodu „' + (pt || 'bez bodu') + '“?')) return;
+  testCmd('/api/meas/del?pt=' + encodeURIComponent(pt), 'Smazáno');
+};
+
+$('btnMlCsv').onclick = () => {
+  if (!ML || !ML.meas.length) return msg('Žádná měření');
+  const rows = ['bod;c;zacatek_utc;sber_s;konec;epoch;vyrazeno;vyrazeno_pohyb;otresu;bez_fixu;ustaleni_s;ustaleni_limit;lat;lon;h_ell_antena;h_msl_antena;antena_m;itrf_etrs;' +
+    'dN_bod;dE_bod;dU_bod;d2D_bod;dU_zdroj;dN_prumer;dE_prumer;dU_prumer;sN;sE;sU;cep50;cep95;hAcc;vAcc;sv;rtk_fix;rtk_float;has;korekce'];
+  mlRows().forEach(({m, r}) => {
+    const d = m.d, df = d ? d.f : 0;
+    rows.push([m.pt, m.no, m.t, m.dur, ['doba', 'rucne', 'odneseno'][m.end || 0], m.n, m.rej, m.mr || 0, m.mot || 0, m.nf, m.st, m.sto ? 1 : 0, m.lat, m.lon, m.he, m.hm, m.ant, m.tr ? 1 : 0,
+      df & 1 ? d.n : '', df & 1 ? d.e : '', df & 6 ? d.u : '', df & 1 ? d.d2 : '', df & 2 ? 'h' : df & 4 ? 'Bpv' : '',
+      r ? r.n.toFixed(3) : '', r ? r.e.toFixed(3) : '', r ? r.u.toFixed(3) : '',
+      m.sN, m.sE, m.sU, m.c50, m.c95, m.ha, m.va, m.sv, m.fx, m.fl, m.hs || 0, m.df].join(';'));
+  });
+  download('rover-mereni-souhrn.csv', rows.join('\r\n'), 'text/csv');
+};
+
+tick();
+</script>
+</body>
+</html>

@@ -1,0 +1,226 @@
+# Rover GNSS – geodetická aplikace pro Android a protokol rover ↔ aplikace (12. 10. 2026)
+
+Samostatný projekt. Rover (ZED-X20P + ESP32) měří a řídí časově kritické věci, aplikace v telefonu
+zajišťuje ovládání, NTRIP z internetu, zpracování, ukládání a export. Navazuje na `rover-firmware-specifikace.md`.
+
+## 1. Rozdělení práce
+
+| Rover (ESP32) | Aplikace (Android) |
+|---|---|
+| Čtení X20: NAV-PVT, NAV-HPPOSLLH, NAV-SAT, NAV-COV, NAV-DOP; volitelně RXM-RAWX/SFRBX | Spojení BT s roverem, automatické obnovení |
+| IMU, detekce pohybu, později EKF GNSS + IMU | Klient NTRIP (RTCM do roveru, GGA zpět do casteru) |
+| Měření bodu (odpočet, ustálení, sběr, souhrn) – běží i bez telefonu | Řízení měření, zobrazení průběhu, stažení výsledků a vzorků |
+| Uložené nastavení, profily a **úloha po startu** (LittleFS) | Nastavení roveru (profily, X20, úlohy po startu, kalibrace) |
+| Výstup polohy 5 Hz + NMEA | Mapa, body, trasy, vytyčení, transformace, export, záznam pro PPK |
+| BT Classic SPP; Wi-Fi jen servisní režim | Databáze v telefonu |
+
+- Rover bez telefonu: po zapnutí provede uloženou úlohu (např. změř bod / zaznamenávej / čekej). RTK z internetu jen s telefonem.
+- **Wi-Fi v roveru:** jen servisní režim (podržení tlačítka při zapnutí, BT vypnuto) – nouzové nastavení a diagnostika. Běžně vše přes aplikaci. Uvolní RAM (~64 kB) a program (~0,5 MB).
+
+## 2. Technologie aplikace
+
+- **Kotlin, Jetpack Compose** (UI), **MapLibre Native** (mapy – vektorové i rastrové vrstvy, offline balíčky), **Room** (SQLite), **Kotlin Coroutines**.
+- **Služba na popředí** (foreground service): BT, NTRIP, záznam běží se zhasnutým displejem.
+- Vlastní implementace: Křovák a transformace ČÚZK s mřížkou oprav, kvazigeoid ČR (mřížka), ITRF2020 → ETRS89 s epochou, klient NTRIP (HTTP/TCP, NTRIP 1/2), parser protokolu roveru.
+- Mapové podklady: OSM (vektor), ČÚZK WMS/WMTS (ortofoto, ZABAGED, katastrální mapa), offline dlaždice pro terén.
+
+## 3. Funkce a obrazovky
+
+| Obrazovka | Obsah |
+|---|---|
+| **Připojení** | výběr roveru (spárovaná BT zařízení), stav spojení, profily NTRIP (VESOG, CZEPOS, vlastní báze; caster, port, mountpoint, jméno/heslo, odesílání GGA), stáří a přenos RTCM |
+| **Živě / mapa** | poloha na mapě, fix (RTK fix / float / HAS / SBAS / 3D / DR), σ N/E/U, hAcc/vAcc, PDOP, počet SV, stáří korekcí, rychlost, kurz, pohyb/klid, baterie roveru; souřadnice ETRS89 / S-JTSK / Bpv |
+| **Satelity** | skyplot, C/N0 podle konstelací a pásem, použité / sledované |
+| **Body** | seznam bodů zakázky, import (CSV, geodetické údaje ČÚZK – ruční zadání, S-JTSK + Bpv), kvalita polohy (přesná / přibližná / nevyhodnocovat), poznámka, foto |
+| **Měření bodu** | cíl (existující / nový bod / bez bodu), odpočet, ustálení (stabilita polohy, hAcc, limit), doba sběru, volitelně jen RTK fix; průběh živě; souhrn (průměr, σ, CEP, počty fix/float/HAS, Δ od bodu); opakovaná měření a opakovatelnost |
+| **Trasy** | záznam 1–10 Hz s σ a kvalitou, za chůze; zobrazení, statistika, filtrace podle σ / kvality |
+| **Vytyčení** | navigace k bodu: vzdálenost, směr, ΔN/ΔE/ΔU, zvuková signalizace přiblížení |
+| **Export** | CSV (ETRS89 / S-JTSK / Bpv, volba sloupců), GPX, KML, GeoJSON, DXF; vzorky měření; sdílení souboru |
+| **PPK** | záznam RAWX/SFRBX do souboru `.ubx` (RTKLIB), metadata (výška antény, čas, bod) |
+| **Rover** | profily (frekvence, dynamický model, elevační maska, C/N0 maska, SBAS/HAS, výstupy NMEA), výška antény a PCO, úloha po startu, bzučák, kalibrace baterie a gyra, verze FW, restart X20 (horký/teplý/studený) |
+| **Diagnostika** | statistika komunikace (UBX, RTCM, BT), PPS, IMU, rušení / AGC, stav antény, OSNMA, paměť roveru, konzole |
+| **Porovnání** | GNSS telefonu (čip / Fused / Network) proti roveru – viz kap. 7b |
+
+### Zakázky a data
+- **Zakázka** (projekt) → body, měření, trasy, soubory PPK, poznámky.
+- Bod: název, druh, ETRS89 φ/λ/h, S-JTSK Y/X, Bpv, kvalita polohy, zdroj (zadaný / změřený), poznámka, foto.
+- Měření: bod, čas, nastavení, souhrn, vzorky (1 Hz), příznaky (RTCM, HAS, pohyb, vyřazení).
+- Trasa: body s časem GNSS, polohou, σ, kvalitou, rychlostí, kurzem.
+
+## 4. Souřadnice a výšky
+
+- Poloha z roveru: s RTCM ze sítě v ČR = ETRS89; bez RTCM (HAS, SBAS) = ITRF2020 → přepočet do ETRS89 (rotace Eurasie s epochou; ČR 2026 ≈ N −0,57 m, E −0,74 m).
+- **ETRS89 ↔ S-JTSK:** postup ČÚZK s opravnou mřížkou (cm úroveň); záloha 7 parametrů (~0,4 m, ověřeno na TB 10 Holý kopec: 0,35 m).
+- **Výška:** elipsoidická h → normální Bpv přes kvazigeoid ČR (mřížka ČÚZK); h_msl z X20 (geoid u-blox) jen orientačně.
+- Výška antény a PCO z profilu roveru; odečítá se při ukládání bodů.
+
+## 5. Protokol rover ↔ aplikace (BT SPP)
+
+Jeden obousměrný proud bajtů. Druhy dat se rozlišují podle prvního znaku:
+
+| Směr | Začátek | Obsah |
+|---|---|---|
+| rover → app | `$G` | NMEA (GGA, RMC, GST, GSA, GSV) – kompatibilita s jinými aplikacemi |
+| rover → app | `$PRVR,` | vlastní věty s kontrolním součtem (živá data) |
+| rover → app | `{` | JSON na jednom řádku: odpovědi na příkazy, události, souhrny |
+| rover → app | `0xB5 0x62` | rámce UBX (RAWX/SFRBX) při záznamu pro PPK |
+| app → rover | `0xD3` | RTCM3 z NTRIP → X20 |
+| app → rover | `{` | JSON příkaz na jednom řádku |
+
+### Živá data `$PRVR` (protokol 1, FW 0.8.0)
+Kontrolní součet jako NMEA (XOR bajtů UTF-8 mezi `$` a `*`). Prázdné pole = hodnota není k dispozici.
+
+`$PRVR,POS,` – každá epocha (frekvence profilu, 5 Hz):
+
+| # | pole | jednotka / význam |
+|---|---|---|
+| 1 | čas UTC | `hhmmss.sss` |
+| 2 | datum | `ddmmyy` |
+| 3, 4 | φ, λ | ° (9 des. míst, z NAV-HPPOSLLH) |
+| 5, 6 | h_ell, h_msl | m |
+| 7–9 | σN, σE, σU | m (NAV-COV; prázdné, když neplatná) |
+| 10, 11 | hAcc, vAcc | m |
+| 12 | kvalita | 0 žádná, 1 GNSS, 2 SBAS/DGNSS, 3 HAS (bez RTCM, ITRF2020), 4 RTK fix, 5 RTK float, 6 dopočet |
+| 13 | carrSoln | 0 / 1 float / 2 fix (u HAS stav konvergence) |
+| 14 | RTCM | 1 = z mobilu chodí RTCM (posledních 30 s) |
+| 15 | stáří korekcí | s (horní mez) |
+| 16 | SV | počet v řešení |
+| 17 | PDOP | |
+| 18, 19 | rychlost, kurz | m/s, ° |
+| 20 | pohyb | 1 = IMU hlásí pohyb (15 °/s nebo 0,2 g, drží 1,5 s) |
+| 21 | hp | 1 = poloha z NAV-HPPOSLLH |
+
+`$PRVR,STA,` – 1 Hz: FW, baterie V, baterie %, aktivní profil (od 0), počet profilů, název profilu, RTCM přijato, RTCM chybné, stáří RTCM [s], typ poslední RTCM, chyby UBX, volná RAM [B], fáze měření bodu (0 nic, 1 odpočet, 2 ustálení, 3 sběr, 4 hotovo, 5 selhalo), čas ve fázi [s], vzorků, zahozené dávky BT; od FW 0.8.1 navíc: fronta BT v roveru [B] (odesláno, zásobníkem BT nepotvrzeno), režim aplikace (0/1), konec epochy X20 (1 = X20 posílá NAV-EOE), počet epoch s HPPOSLLH.
+
+Od FW 0.11.0 na konci STA navíc: rámce UBX z mobilu OK, vadné, MGA-ACK přijato, odmítnuto, vyslané MGA-DBD, ACKAIDING (1 OK / 0 NAK / −1 bez odpovědi).
+
+`$PRVR,SAT,` – 1 Hz (v režimu aplikace každé 2 s), po 12 družicích: část, počet částí, celkem sledovaných, pak opakovaně `gnssId,svId,C/N0,elevace,azimut,použit` (jen C/N0 > 0).
+
+Režim aplikace (FW 0.8.1): první příkaz JSON ho zapne, odpojení BT vypne. Z NMEA jde jen GGA a RMC (GGA potřebuje NTRIP), GSA/GSV/GST se neposílají (data jsou v `$PRVR`). Přenos ~1,7 kB/s místo ~3,6 kB/s.
+
+Omezení zpoždění (FW 0.8.1): rover počítá odeslaná a zásobníkem BT potvrzená data (ESP_SPP_WRITE_EVT); nad 2 kB nepotvrzených dat se dávky zahazují – po zaseknutí spojení přijde nejnovější poloha, ne stará fronta.
+
+Příkazy z mobilu: řádek JSON začínající `{` a ukončený `\n`. Rover ho rozpozná jen mimo rámec RTCM – aplikace proto posílá RTCM po celých rámcích. Etapa 1 (FW 0.8.0): `get info`, `get profiles`, `profile`, `x20 reset`.
+
+### Příkazy (JSON, `id` pro spárování odpovědi)
+- `{"id":1,"cmd":"get","what":"info|profiles|device|points|meas|task"}`
+- `{"id":2,"cmd":"set","what":"profiles|device|task","data":{…}}`
+- `{"id":3,"cmd":"profile","i":2}` – aktivní profil
+- `{"id":4,"cmd":"meas","op":"start","cfg":{…}}` / `"op":"finish|cancel"`
+- `{"id":5,"cmd":"raw","meas":12,"from":0,"n":200}` – vzorky měření po dávkách
+- `{"id":6,"cmd":"log","what":"rawx","on":true}` – UBX RAWX/SFRBX do proudu
+- `{"id":7,"cmd":"x20","op":"reset","kind":"hot|warm|cold"}`, `"op":"cfg"` (vybrané klíče)
+- `{"id":8,"cmd":"cal","what":"battery|gyro",…}`
+- Odpověď: `{"id":N,"ok":true,…}` / `{"id":N,"ok":false,"err":"…"}`; události bez `id`: `{"ev":"meas_done",…}`, `{"ev":"moved",…}`.
+
+### Úloha po startu (uložená v roveru)
+- `none` – jen výstup polohy, čeká na příkazy.
+- `meas` – změř bod (bod, ustálení, doba, opakování); výsledek uloží, bzučák signalizuje.
+- `track` – záznam (v roveru jen souhrn / značky; vzorky do telefonu, když je připojen).
+- Platí po každém zapnutí, dokud ji aplikace nezmění.
+
+## 6. Úpravy roveru (ESP)
+
+1. Protokol `$PRVR` + JSON příkazy přes SPP (místo webového API); NMEA zůstává.
+2. Wi-Fi a web jen jako servisní režim (podržení tlačítka při zapnutí, bez BT).
+3. Úloha po startu, ukládání v LittleFS.
+4. Předávání RAWX/SFRBX do SPP na povel.
+5. EKF GNSS + IMU, rozptyl v klidu (modul `motion`) – podle plánu ve specifikaci firmwaru.
+
+## 7. Etapy
+
+1. **Základ:** protokol v roveru, spojení BT, NTRIP, živé zobrazení + mapa, záznam trasy, export CSV/GPX.
+2. **Body a měření:** zakázky, body, řízení měření bodu, stažení vzorků, souhrny a porovnání, ETRS89 ↔ S-JTSK, kvazigeoid.
+3. **Vytyčení, PPK, nastavení roveru:** vytyčení, záznam RAWX, profily a úloha po startu, diagnostika.
+4. **Rover:** EKF, rozptyl v klidu, servisní režim Wi-Fi.
+
+## 7a. Úpravy po testu 13. 10. (Kraví hora, HAS)
+
+**Výška antény v cm**
+- Zadání i zobrazení výšky antény v **cm** (uložení dál v m). Souhrn měření a export ukazují výšku v cm.
+- Kontrola rozsahu při zadání (např. 0–300 cm), u hodnoty pod 1 cm upozornit.
+
+**Jedno místo pro profil a nastavení měření**
+- Problém: profil (dynamický model) se mění na obrazovce Rover, příznak statiky na obrazovce Měření bodu. Souhrn pak ukazuje „Chodec 5 Hz“ a zároveň `staticky_model = 1`, takže není jasné, co skutečně platilo.
+- **Obrazovka Rover** = jediné místo pro trvalé nastavení: profily (frekvence, dynamický model, masky, SBAS/HAS), výška antény a PCO.
+- **Měření bodu** nemá vlastní přepínače nastavení roveru. Nahoře ukazuje aktivní profil a výšku antény a nabízí tlačítko „Změnit“, které otevře obrazovku Rover.
+- Statika při měření bodu: volba v profilu „při měření bodu přepnout na stacionární model“. Rover ji provede sám na začátku sběru a po skončení vrátí model profilu.
+- Souhrn a vzorky ukládají **skutečně použité** nastavení podle potvrzení roveru: dynamický model, frekvenci a výšku antény. Samotný název profilu nestačí.
+
+## 7b. Porovnání GNSS telefonu s roverem (14. 10.)
+
+Cíl: ukázat skutečnou přesnost polohy telefonu a vliv asistence (A-GNSS, Fused) proti referenci z roveru.
+
+**Zdroje telefonu (každý zapnout/vypnout zvlášť)**
+
+| Zdroj | API | Obsah |
+|---|---|---|
+| **GNSS čip** | `LocationManager`, `GPS_PROVIDER` | čistá poloha z čipu (A-GNSS data už čip využívá); φ, λ, h_ell, rychlost, kurz, čas, přesnost horizontální (68 %) a vertikální (Android 8+) |
+| **Fused** | Google Play Services `FusedLocationProviderClient`, vysoká přesnost | GNSS + Wi-Fi + BTS + senzory – poloha „s asistencí“, jak ji vidí běžné aplikace |
+| **Network** | `NETWORK_PROVIDER` | jen Wi-Fi / BTS, bez GNSS |
+| **Satelity telefonu** | `GnssStatus` | konstelace, svId, C/N0, elevace, azimut, použit, nosná frekvence (L1/L5, E1/E5a) |
+
+- Volitelně `GnssMeasurement` (surová měření, jen některé telefony) – zjistit podporu a uložit příznak v diagnostice; záznam pro RTKLIB až později.
+- Při budoucí mock location z roveru číst telefon jen z hardwarových providerů, ne z mock.
+
+**Reference a párování**
+- Reference = poloha roveru (RTK fix / float / zkonvergovaný HAS); u každé epochy porovnání se ukládá kvalita reference.
+- Páruje se podle času GNSS (telefon ~1 Hz, rover 5 Hz → nejbližší epocha roveru, max. rozdíl 100 ms; Fused/Network podle času polohy, s uvedením stáří).
+- Systém: telefon = WGS84 ≈ ITRF2020 → stejný přepočet do ETRS89 jako HAS; reference podle příznaku RTCM.
+- Odsazení telefonu od antény: zadání ΔN/ΔE/ΔU [cm] nebo „telefon u antény“ (0).
+
+**Obrazovka Porovnání**
+- Živě pro každý zdroj: ΔN, ΔE, ΔU, 2D chyba, hlášená přesnost, poměr chyba / hlášená přesnost, stáří polohy, počet SV (čip), frekvence (L1 / L1+L5).
+- Graf rozptylu se středem v poloze roveru, všechny zdroje v jednom měřítku (barvy podle zdroje), kruhy hlášené přesnosti.
+- Časový graf 2D chyby zdrojů.
+- Statistika za zvolené okno / celé porovnání: průměr, σ, RMS, CEP50/95, max, podíl epoch, kdy byla chyba > hlášená přesnost.
+- Na mapě (Živě, Trasy) volitelně stopy zdrojů telefonu vedle roveru.
+- Satelity: přepínač rover / telefon.
+- Uložení porovnání k zakázce (volitelně k trase nebo měření bodu), export CSV (čas, zdroj, poloha, hlášená přesnost, Δ vůči roveru, kvalita reference).
+
+**Test doby do fixu telefonu (vliv A-GNSS)**
+- Smazání asistenčních dat čipu: `sendExtraCommand(GPS_PROVIDER, "delete_aiding_data")`; vynucení stažení: `"force_psds_injection"` (dříve `"force_xtra_injection"`), čas `"force_time_injection"`. Oprávnění `ACCESS_LOCATION_EXTRA_COMMANDS`. Podpora závisí na výrobci – výsledek příkazu zaznamenat.
+- Varianty: studený start bez internetu (uživatel zapne režim letadlo, aplikace ověří), studený start s A-GNSS, horký start.
+- Měří: čas do první polohy GNSS čipu, do přesnosti < 10 m a < 5 m vůči roveru, počet SV v čase; pro Fused čas do první polohy a do < 10 m.
+- Opakování, tabulka pokusů, min / medián / max, export CSV.
+
+**Nelze zjistit**
+- zda čip použil SBAS nebo jiné korekce,
+- váhy zdrojů ve Fused (GNSS / Wi-Fi / BTS),
+- zda čip skutečně použil stažená A-GNSS data (jen nepřímo z doby do fixu).
+
+## 7c. Asistence X20 z telefonu (14. 10.)
+
+Cíl: kratší studený start X20 po delším vypnutí bez účtu a bez internetu. AssistNow (Thingstream) se nepoužívá.
+
+**1. Čas a přibližná poloha z telefonu (UBX-MGA-INI)**
+- Po připojení BT, když rover hlásí fix „žádný“: aplikace pošle UBX-MGA-INI-TIME_UTC (čas telefonu, přesnost podle zdroje – GNSS telefonu / síť) a UBX-MGA-INI-POS_LLH (poloha telefonu, přesnost z `Location.accuracy`, min. 100 m pro Network).
+- Rámce UBX jdou z mobilu do roveru a ESP je předá beze změny do UART1 X20 (FW 0.11.0: `btlink` rozpozná rámec `0xB5 0x62` a uvnitř nehledá JSON).
+- Výsledek: UBX-MGA-ACK (pokud X20 posílá), zobrazit v Diagnostice; zapnutí/vypnutí v nastavení Roveru.
+
+**2. Uložení navigační databáze X20 (UBX-MGA-DBD)**
+- Aplikace periodicky (např. 1× za 30 min při fixu) a při odpojení / slabé baterii vyžádá výpis databáze (poll UBX-MGA-DBD); rover předá odpovědi MGA-DBD z X20 do BT (**úprava FW ESP** – dnes jen RAWX/SFRBX).
+- Aplikace uloží databázi s časem (Room / soubor), po dalším připojení při studeném startu ji pošle zpět do X20 (po MGA-INI-TIME).
+- Platnost: efemeridy ~4 h, almanach týdny – starší databázi poslat jen pro almanach; stáří zobrazit.
+- Ověřit v popisu rozhraní HPG 2.11, že X20P podporuje MGA-DBD a MGA-INI.
+
+**Ověření přínosu:** test TTFF roveru (studený start) bez asistence / s bodem 1 / s body 1+2.
+
+## 8. Otevřené otázky
+
+- Zdroj a formát mřížek ČÚZK (transformace S-JTSK, kvazigeoid) – ověřit aktuální soubory a licenci.
+- NTRIP: dostupné castery (VESOG, CZEPOS) a vzdálenost referenčních stanic od místa měření (fix spolehlivě do ~20–30 km).
+- Mock location pro ostatní aplikace v telefonu – volitelně.
+
+## 9. Stav aplikace
+
+- **0.1.0 (etapa 1):** spojení BT, protokol `$PRVR`, NTRIP, mapa, satelity, záznam tras, export CSV/GPX, diagnostika (DB v3).
+- **0.2.0 (etapa 2a):** zakázky (výběr, nová, přejmenování, smazání), záložka Body (ruční zadání S-JTSK+Bpv nebo ETRS89, úhly i 49°55′9,8368″, dopočet druhého systému 7 parametry, import/export CSV), body na mapě s popisky, vrstva bodových polí ČÚZK (rastr ze služby BodovaPole od přiblížení 13) a dotaz klepnutím (do 30 m, vrstvy ZhB, ZPBP, PPBP, ZVBP, PVBP) s převzetím do zakázky; trasy podle zakázky. DB v4 (starší data se smažou).
+  - Pole služby BodovaPole (ZhB): CISLO, ZTLTL, DRUH, Y, X, VYSKA, B, L, HEL, GPS, GEODETICKE_UDAJE, NAZEV_KU, NAZEV_OKRES; formát hodnot ověřit na skutečných datech (karta bodu ukazuje všechna pole).
+- **0.7.0 (14. 10., napsáno bez překladu – ověřit překladem v Android Studiu, na HW netestováno):** karta **Telefon** a asistence X20 (kap. 7b, 7c), výška antény v cm (kap. 7a).
+  - Zdroje polohy telefonu GNSS čip / Fused / Network (přepínače, uloženo), satelity telefonu s pásmy (přepínač Rover / Telefon i v Živě → Satelity), zjištění podpory surových měření.
+  - Porovnání: párování s roverem (čip podle času GNSS do 100 ms, Fused/Network podle času příjmu do 600 ms), přepočet telefonu ITRF2020 → ETRS89, odsazení telefonu od antény [cm], živé Δ, poměr chyba / hlášená přesnost, graf rozptylu, časový graf 2D chyby, statistika (průměr, σ, RMS, CEP50/95, max, podíl chyba > přesnost), stopy na mapě, ukládání k zakázce (DB v8, migrace 7 → 8, data zůstávají), export CSV.
+  - Test doby do fixu telefonu: studený bez internetu / s A-GNSS / horký, opakování, limit, pauza; čas do první polohy, < 10 m, < 5 m, Fused; min / medián / max, CSV.
+  - Asistence X20 (FW 0.11.0+): po připojení bez fixu MGA-INI-TIME_UTC + POS_LLH (telefon, jinak poslední poloha roveru), záloha MGA-DBD každých 30 min při fixu (uloží se jen úplný výpis podle počítadla roveru), vrácení databáze mladší 7 dní; ruční tlačítka, studený start X20.
+  - Oprávnění k poloze, služba na popředí s typem „poloha“ (poloha telefonu se zhasnutým displejem), knihovna `play-services-location` 21.3.0.
+  - Kap. 7a: měření bodu už přepínače roveru nemá (statika a RAWX jsou v uživatelském profilu v Nastavení) a souhrn ukládá statiku podle potvrzení roveru – zbývalo zadání a zobrazení výšky antény v cm (rozsah 0–300 cm, varování pod 1 cm), export měření `vyska_anteny_cm`.
