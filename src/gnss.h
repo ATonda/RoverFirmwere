@@ -72,6 +72,19 @@ struct SatSummary {
   SatInfo list[MAX_SATS];
 };
 
+// UBX-NAV-SIG (1 Hz): zdroj korekcí u signálů použitých s korekcí.
+// corrSource u-blox: 0 žádný, 1 SBAS, 2 BeiDou, 3 RTCM2, 4 RTCM3 OSR, 5 RTCM3 SSR, 6 QZSS SLAS, 7 SPARTN,
+// 8 CLAS; vyšší hodnoty (HAS) podle firmwaru X20 – aplikace je zobrazí číslem.
+struct SigSummary {
+  bool valid = false;
+  uint32_t rxMs = 0;
+  uint8_t n = 0;             // signálů ve zprávě
+  uint8_t used = 0;          // použitých v řešení (pseudovzdálenost)
+  uint8_t corrUsed = 0;      // použitých s korekcí
+  uint8_t bySrc[16] = {0};   // počet signálů s korekcí podle corrSource
+  int8_t dominant = -1;      // nejčastější zdroj korekcí (-1 = bez korekcí)
+};
+
 struct Info {
   bool valid = false;
   char sw[31] = {0};
@@ -97,6 +110,8 @@ struct Stats {
   uint32_t mgaRejected = 0;  // UBX-MGA-ACK: asistenční zpráva odmítnuta
   uint32_t mgaDbd = 0;       // UBX-MGA-DBD vyslané X20 (výpis databáze)
   int8_t ackAiding = -1;     // CFG-NAVSPG-ACKAIDING: 1 OK, 0 NAK, -1 bez odpovědi
+  int8_t corrCfg = -1;       // korekce SBAS/HAS/hostitel (CFG-SBAS, CFG-NAVCOR): 1 OK, 0 NAK, -1 bez odpovědi
+  uint32_t sigCount = 0;     // přijaté NAV-SIG
 };
 
 // Výsledek konfigurace po startu
@@ -109,6 +124,9 @@ bool detect();                   // najde aktuální rychlost X20, nastaví UART
 // Parametry z profilu: perioda měření [ms], dyn. model (kód u-blox), elevační maska [°].
 // Projeví se při dalším configure().
 void setParams(uint16_t measRateMs, uint8_t dynModel, int8_t minElev);
+// Korekce z profilu: SBAS a Galileo HAS (korekce od hostitele – RTCM z mobilu – zůstávají vždy zapnuté).
+// Projeví se při dalším configure().
+void setCorr(bool sbas, bool has);
 bool configure(bool verbose);    // pošle konfiguraci do RAM X20
 // Měření bodu z aplikace: statický model X20 (místo modelu z profilu) a surová data RXM-RAWX (1 Hz)
 // a RXM-SFRBX. Pošle hned do RAM X20, platí i při dalším configure(). Vrací true = X20 potvrdila.
@@ -117,6 +135,8 @@ bool measStatic();
 bool measRaw();
 // Rámce RXM-RAWX / RXM-SFRBX (kompletní UBX) – předávají se do BT
 void onRawFrame(void (*cb)(const uint8_t *frame, uint16_t len));
+// Rámce NAV-PVT, NAV-COV a NAV-HPPOSLLH (kompletní UBX) – při záznamu v aplikaci do BT (podklad pro EKF)
+void onNavFrame(void (*cb)(const uint8_t *frame, uint16_t len));
 bool pollVersion(uint32_t timeoutMs);
 void poll();                     // zpracuje přijatá data (volat z loop)
 void bridge(bool (*exitRequested)());  // průchozí režim USB <-> X20 (blokující, konzole)
@@ -146,6 +166,7 @@ const Pvt &pvt();
 const SatSummary &sats();
 const Dop &dop();
 const Cov &cov();
+const SigSummary &sig();
 const Info &info();
 Stats stats();
 const char *initResultText(InitResult r);

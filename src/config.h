@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 #define FW_NAME    "Rover"
-#define FW_VERSION "0.12.0"
+#define FW_VERSION "0.13.0"
 
 // ---------------------------------------------------------------- piny
 // X20 UART1 (ELT0421: TX/SPI_MISO, RX/SPI_MOSI)
@@ -20,7 +20,7 @@ static constexpr int PIN_IMU_INT1 = 15;
 
 // Ostatní
 static constexpr int PIN_VBAT     = 35;   // dělič 100k/100k z BAT 6092
-static constexpr int PIN_BUTTON   = 13;   // tlačítko Wi-Fi / profil proti GND (pár 1 bílá/šedá)
+static constexpr int PIN_BUTTON   = 13;   // tlačítko profil / restart proti GND (pár 1 bílá/šedá)
 static constexpr int PIN_BOOT     = 0;    // tlačítko BOOT proti GND (pár 6 fialová/modrá), za běhu čitelné
 static constexpr int PIN_BUZZER   = 25;   // piezo (pár 7 oranžová/žlutá)
 static constexpr int PIN_LED      = 26;   // WS2812 DIN (pár 2 černá/hnědá + VCC), zatím nezapojeno
@@ -37,17 +37,12 @@ static constexpr uint8_t IMU_ADDR_B = 0x6B;
 
 // ---------------------------------------------------------------- tlačítko
 static constexpr uint32_t BTN_DEBOUNCE_MS = 30;
-static constexpr uint32_t BTN_LONG_MS     = 2000;   // provoz -> konfigurační režim
-static constexpr uint32_t BTN_EXIT_MS     = 5000;   // konfigurace/test -> restart do provozu (BT)
+static constexpr uint32_t BTN_LONG_MS     = 5000;   // podržení = restart ESP (pípnutí při dosažení)
 
 // ---------------------------------------------------------------- baterie
 static constexpr float VBAT_DIVIDER_DEFAULT = 2.0f;
 
-// ---------------------------------------------------------------- konfigurační režim
+// ---------------------------------------------------------------- profily
 static constexpr int PROFILES_MAX = 10;
-// Wi-Fi AP + web: pod touto volnou RAM se BT před startem Wi-Fi vypne (s BT bývá volných jen ~56 kB)
-static constexpr uint32_t WIFI_MIN_HEAP = 100000;
-static constexpr uint32_t WIFI_MIN_BLOCK = 60000;
 // Bluetooth: víc nepotvrzených dat v zásobníku = dávka se zahodí (~1 s dat v režimu aplikace)
 static constexpr uint32_t BT_MAX_BACKLOG = 2048;
-static constexpr uint8_t RESCUE_CRASHES = 3;  // tolik pádů po sobě -> záchranný režim (AP + OTA)

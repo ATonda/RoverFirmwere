@@ -371,7 +371,7 @@ Stats stats() {
   return s;
 }
 
-bool calibrateGyro(uint32_t durationMs) {
+bool calibrateGyro(uint32_t durationMs, void (*idle)()) {
   if (!addr) return false;
   // dočasně vynulovat bias, aby se měřila surová hodnota
   float ox = biasX, oy = biasY, oz = biasZ;
@@ -392,6 +392,7 @@ bool calibrateGyro(uint32_t durationMs) {
       qz += last.gz * last.gz;
       n++;
     }
+    if (idle) idle();
     delay(1);
   }
   bool ok = n >= 50;

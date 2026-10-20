@@ -34,7 +34,8 @@ bool pop(Sample &s);          // další vzorek z fronty (pro EKF), false = prá
 Stats stats();
 
 // Kalibrace biasu gyra – přístroj musí ležet v klidu. Uloží do NVS.
-bool calibrateGyro(uint32_t durationMs);
+// idle (volitelně) se volá během čekání – obsluha X20 a BT, aby nepřetekly buffery.
+bool calibrateGyro(uint32_t durationMs, void (*idle)() = nullptr);
 void gyroBias(float &bx, float &by, float &bz);
 
 }  // namespace imu

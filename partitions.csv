@@ -1,7 +1,7 @@
 # LittleFS používá oddíl s názvem 'spiffs' (výchozí v Arduino LittleFS)
-# Bez OTA (nahrávání jen přes USB): jedna aplikace 2,25 MB + LittleFS 1,69 MB
-# (profily, body, měření, zásobník epoch při výpadku BT). Změna rozdělení LittleFS smaže (naformátuje).
+# Bez OTA a bez Wi-Fi (od FW 0.13.0): jedna aplikace 1,5 MB (FW 1,22 MB) + LittleFS 2,44 MB
+# (profily, nastavení přístroje, zásobník epoch při výpadku BT). Změna rozdělení LittleFS smaže (naformátuje).
 # Name,     Type, SubType,  Offset,   Size
 nvs,        data, nvs,      0x9000,   0x5000
-factory,    app,  factory,  0x10000,  0x240000
-spiffs,     data, spiffs,   0x250000, 0x1B0000
+factory,    app,  factory,  0x10000,  0x180000
+spiffs,     data, spiffs,   0x190000, 0x270000

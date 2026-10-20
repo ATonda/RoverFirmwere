@@ -1,5 +1,5 @@
 // Uživatelské profily a nastavení přístroje (LittleFS, JSON)
-// Stejný formát JSON používá web a později i BLE konfigurace.
+// Stejný formát JSON používá aplikace RoverGnss (get/set profiles, get/set device) i konzole USB.
 #pragma once
 #include <Arduino.h>
 
@@ -20,11 +20,12 @@ struct Profile {
   uint8_t led = 30;            // jas [%] krok 4
   float antH = 0;              // výška antény: značka -> ARP [m]
   float pco = 0;               // posun fázového centra: ARP -> fázové centrum [m]
+  bool sbas = true;            // korekce SBAS (CFG-SBAS-USE_DIFFCORR)
+  bool has = true;             // Galileo HAS (CFG-NAVCOR-ENABLE_GAL_HAS)
 };
 
 struct Device {
-  char apPass[33] = "";        // heslo Wi-Fi AP (WPA2, 8–32 znaků)
-  char btName[25] = "";        // prázdné = ROVER-xxxx
+  char btName[25] = "";        // prázdné = ROVER-xxxx (změna platí po restartu)
 };
 
 bool begin();                  // připojí LittleFS (při chybě naformátuje), načte soubory
@@ -41,7 +42,7 @@ const char *dynName(Dyn d);
 
 // Profily jako JSON: {"active":0,"default":0,"profiles":[{…}]}
 String profilesJson();
-// Uloží celý seznam profilů (z webu / importu). Při chybě nic nemění a vrátí popis do err.
+// Uloží celý seznam profilů (z aplikace / konzole). Při chybě nic nemění a vrátí popis do err.
 bool setProfilesJson(const char *json, String &err);
 
 const Device &device();

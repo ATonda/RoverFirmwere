@@ -8,7 +8,6 @@
 #include "gnss.h"
 #include "power.h"
 #include "settings.h"
-#include "survey.h"
 
 namespace proto {
 
@@ -29,8 +28,8 @@ void onImu(const imu::Sample &s) {
 bool moving() { return motLastMs && millis() - motLastMs < MOT_HOLD_MS; }
 
 // ---------------------------------------------------------------- věty
-static void (*profileHook)(int) = nullptr;
-void setProfileHook(void (*fn)(int)) { profileHook = fn; }
+static Hooks hooks;
+void setHooks(const Hooks &h) { hooks = h; }
 
 static bool app = false;
 
@@ -53,11 +52,16 @@ uint8_t quality() {
   if (!p.valid) return Q_NONE;
   if (p.fixType == 1) return Q_DR;
   if (!p.gnssFixOk) return Q_NONE;
+  bool rtcm = gnss::rtcmActive();
   if (p.carrSoln) {
-    if (!gnss::rtcmActive()) return Q_HAS;
+    if (!rtcm) return Q_HAS;
     return p.carrSoln == 2 ? Q_FIX : Q_FLOAT;
   }
-  return p.diffSoln ? Q_DGNSS : Q_GNSS;
+  if (!p.diffSoln) return Q_GNSS;
+  // Korekce bez fáze: SBAS, nebo HAS před konvergencí (zdroj z NAV-SIG; bez NAV-SIG jako dřív DGNSS)
+  const gnss::SigSummary &g = gnss::sig();
+  if (!rtcm && g.valid && millis() - g.rxMs < 3000 && g.dominant > 1) return Q_HAS;
+  return Q_DGNSS;
 }
 
 // $PRVR,POS,čas,datum,lat,lon,hEll,hMSL,σN,σE,σU,hAcc,vAcc,kvalita,carrSoln,rtcm,stáříKor,SV,PDOP,rychlost,kurz,pohyb,hp
@@ -136,9 +140,21 @@ void sendBufEnd(uint32_t n) {
   btlink::flush();
 }
 
+// Doba od zapnutí do prvního 3D fixu, korekcí, RTK/HAS float a fix [ms] (test zálohy X20 po vypnutí)
+static uint32_t bootFix = 0, bootCorr = 0, bootFloat = 0, bootRtk = 0;
+
+static void bootTimes(const PosRec &r) {
+  uint32_t now = millis();
+  if (!bootFix && r.q != Q_NONE && r.q != Q_DR) bootFix = now;
+  if (!bootCorr && (r.q == Q_DGNSS || r.q == Q_HAS || r.q == Q_FLOAT || r.q == Q_FIX)) bootCorr = now;
+  if (!bootFloat && r.carrSoln >= 1) bootFloat = now;
+  if (!bootRtk && r.carrSoln == 2) bootRtk = now;
+}
+
 void sendPos() {
   PosRec r;
   if (!capturePos(r)) return;
+  bootTimes(r);
   bool c = btlink::connected();
   ebuf::onEpoch(r, c);
   if (c) sendRec(r, false);
@@ -157,7 +173,9 @@ static void safeCopy(char *dst, size_t size, const char *src) {
 // $PRVR,STA,FW,baterieV,baterie%,profil,početProfilů,názevProfilu,rtcmOk,rtcmChybné,stáříRtcm,typRtcm,
 //           ubxChyby,volnáRAM,měřeníFáze,měřeníČas,měřeníEpochy,btZahozeno,
 //           btFronta[B],režimAplikace,eoe(1 = X20 posílá konec epochy),hpEpoch,
-//           ubxOk,ubxVadné,mgaAck,mgaNak,mgaDbd,ackAiding (0.11.0),frekvence[Hz] (0.12.0)
+//           ubxOk,ubxVadné,mgaAck,mgaNak,mgaDbd,ackAiding (0.11.0),frekvence[Hz] (0.12.0),
+//           zdrojKorekcí(NAV-SIG, -1 žádný),signálůSKorekcí,korekceCfg(1 OK/0 NAK/-1),průchozí,navZáznam (0.13.0)
+// Od 0.13.0 nemá rover měření bodu – pole měřeníFáze/Čas/Epochy jsou 0.
 void sendSta() {
   if (!btlink::connected()) return;
   btlink::Stats bs = btlink::stats();
@@ -170,15 +188,19 @@ void sendSta() {
                    settings::active(), settings::count(), pname, (unsigned long)bs.rtcmOk, (unsigned long)bs.rtcmBad);
   if (bs.rtcmOk) n += snprintf(b + n, sizeof(b) - n, "%.1f,%u,", (millis() - bs.rtcmLastMs) / 1000.0f, bs.rtcmLastType);
   else n += snprintf(b + n, sizeof(b) - n, ",,");
-  n += snprintf(b + n, sizeof(b) - n, "%lu,%lu,%d,%lu,%d,%lu,%lu,%d,%d,%lu", (unsigned long)gs.ubxErr,
-                (unsigned long)ESP.getFreeHeap(), survey::phase(), (unsigned long)survey::phaseSeconds(),
-                survey::rawCount(), (unsigned long)bs.txDropped, (unsigned long)btlink::backlog(), appMode() ? 1 : 0,
-                gs.eoeCount ? 1 : 0, (unsigned long)gs.hpCount);
+  n += snprintf(b + n, sizeof(b) - n, "%lu,%lu,0,0,0,%lu,%lu,%d,%d,%lu", (unsigned long)gs.ubxErr,
+                (unsigned long)ESP.getFreeHeap(), (unsigned long)bs.txDropped, (unsigned long)btlink::backlog(),
+                appMode() ? 1 : 0, gs.eoeCount ? 1 : 0, (unsigned long)gs.hpCount);
   // od FW 0.11.0: rámce UBX z mobilu (OK, vadné), MGA-ACK (přijato, odmítnuto), vyslané MGA-DBD, ACKAIDING
   n += snprintf(b + n, sizeof(b) - n, ",%lu,%lu,%lu,%lu,%lu,%d", (unsigned long)bs.ubxOk, (unsigned long)bs.ubxBad,
                 (unsigned long)gs.mgaAccepted, (unsigned long)gs.mgaRejected, (unsigned long)gs.mgaDbd, gs.ackAiding);
   // od FW 0.12.0: frekvence navigace aktivního profilu [Hz]
   n += snprintf(b + n, sizeof(b) - n, ",%u", (unsigned)settings::profile(settings::active()).rateHz);
+  // od FW 0.13.0: zdroj korekcí, signály s korekcí, výsledek nastavení korekcí, průchozí režim, rámce NAV při záznamu
+  const gnss::SigSummary &g = gnss::sig();
+  bool sigOk = g.valid && millis() - g.rxMs < 3000;
+  n += snprintf(b + n, sizeof(b) - n, ",%d,%u,%d,%d,%d", sigOk ? g.dominant : -1, sigOk ? g.corrUsed : 0, gs.corrCfg,
+                hooks.bridgeActive && hooks.bridgeActive() ? 1 : 0, navRecording() ? 1 : 0);
   emit(b, sizeof(b), n);
   btlink::flush();
 }
@@ -214,11 +236,17 @@ void sendSat() {
 }
 
 // ---------------------------------------------------------------- příkazy JSON
-// Odpověď na jednom řádku; delší než dávka BT se posílá po částech
+// Odpověď na jednom řádku; do BT po částech (dávka BT má 2 kB), do konzole USB přímo
+static bool toConsole = false;
+
 static void reply(JsonDocument &d) {
   String out;
   serializeJson(d, out);
   out += "\r\n";
+  if (toConsole) {
+    Serial.print(out);
+    return;
+  }
   btlink::flush();  // rozpracovaná dávka NMEA nejdřív
   for (size_t i = 0; i < out.length(); i += 1024) {
     size_t n = out.length() - i < 1024 ? out.length() - i : 1024;
@@ -226,6 +254,8 @@ static void reply(JsonDocument &d) {
     btlink::flush();
   }
 }
+
+bool navRecording() { return ebuf::recording() && btlink::connected(); }
 
 static void infoJson(JsonDocument &d) {
   d["fw"] = FW_VERSION;
@@ -250,9 +280,31 @@ static void infoJson(JsonDocument &d) {
   d["bat"] = serialized(String(v, 2));
   d["heap"] = ESP.getFreeHeap();
   d["up"] = millis() / 1000;
+  // od 0.13.0: rover umí nastavení z aplikace (profily, přístroj, kalibrace, průchozí režim)
+  d["caps"] = "set,cal,pass,navrec,sig,boot";
+  // doba od zapnutí ESP (= napájení X20) do prvního fixu atd. [ms]; -1 = zatím ne
+  JsonObject bt = d["boot"].to<JsonObject>();
+  bt["fix"] = bootFix ? (int32_t)bootFix : -1;
+  bt["corr"] = bootCorr ? (int32_t)bootCorr : -1;
+  bt["float"] = bootFloat ? (int32_t)bootFloat : -1;
+  bt["fixRtk"] = bootRtk ? (int32_t)bootRtk : -1;
+  d["upMs"] = millis();
+  d["reset"] = (int)esp_reset_reason();  // 1 zapnutí napájení, 3 SW restart, …
 }
 
-void handleCmd(const char *line, size_t len) {
+static void calJson(JsonDocument &d) {
+  float bx, by, bz;
+  imu::gyroBias(bx, by, bz);
+  JsonArray g = d["gyro"].to<JsonArray>();
+  g.add(serialized(String(bx, 3)));
+  g.add(serialized(String(by, 3)));
+  g.add(serialized(String(bz, 3)));
+  d["div"] = serialized(String(power::dividerFactor(), 4));
+  d["bat"] = serialized(String(power::batteryVolts(), 3));
+  d["batOk"] = power::valid();
+}
+
+static void handle(const char *line, size_t len) {
   JsonDocument in;
   JsonDocument out;
   DeserializationError e = deserializeJson(in, line, len);
@@ -263,22 +315,85 @@ void handleCmd(const char *line, size_t len) {
     return;
   }
   if (!in["id"].isNull()) out["id"] = in["id"];
-  app = true;  // příkaz poslala aplikace RoverGnss
+  if (!toConsole) app = true;  // příkaz poslala aplikace RoverGnss
   const char *cmd = in["cmd"] | "";
   const char *what = in["what"] | "";
   out["ok"] = true;
+  bool restartAfter = false;
 
   if (!strcmp(cmd, "get") && !strcmp(what, "info")) {
     infoJson(out);
   } else if (!strcmp(cmd, "get") && !strcmp(what, "profiles")) {
     out["data"] = serialized(settings::profilesJson());
+  } else if (!strcmp(cmd, "set") && !strcmp(what, "profiles")) {
+    String data;
+    serializeJson(in["data"], data);
+    String err;
+    if (in["data"].isNull() || !settings::setProfilesJson(data.c_str(), err)) {
+      out["ok"] = false;
+      out["err"] = in["data"].isNull() ? String("chybí data") : err;
+    } else {
+      if (hooks.applyProfile) hooks.applyProfile(settings::active());
+      out["data"] = serialized(settings::profilesJson());
+      Serial.printf("[app] profily uloženy (%d), aktivní %d\n", settings::count(), settings::active() + 1);
+    }
+  } else if (!strcmp(cmd, "get") && !strcmp(what, "device")) {
+    out["data"] = serialized(settings::deviceJson());
+    out["default"] = btlink::defaultName();
+    out["name"] = btlink::name();
+  } else if (!strcmp(cmd, "set") && !strcmp(what, "device")) {
+    String data;
+    serializeJson(in["data"], data);
+    String err;
+    if (in["data"].isNull() || !settings::setDeviceJson(data.c_str(), err)) {
+      out["ok"] = false;
+      out["err"] = in["data"].isNull() ? String("chybí data") : err;
+    } else {
+      out["data"] = serialized(settings::deviceJson());
+      out["restart"] = true;  // název BT platí po restartu
+    }
+  } else if (!strcmp(cmd, "get") && !strcmp(what, "cal")) {
+    calJson(out);
+  } else if (!strcmp(cmd, "cal")) {
+    if (!strcmp(what, "battery")) {
+      float v = in["v"] | 0.0f;
+      if (!power::calibrate(v)) {
+        out["ok"] = false;
+        out["err"] = "neplatné napětí (koeficient musí vyjít 1,6–2,4)";
+      }
+    } else if (!strcmp(what, "gyro")) {
+      if (!imu::present()) {
+        out["ok"] = false;
+        out["err"] = "IMU nenalezeno";
+      } else if (!imu::calibrateGyro(3000, hooks.idle)) {
+        out["ok"] = false;
+        out["err"] = "pohyb nebo málo vzorků – bias beze změny";
+      }
+    } else {
+      out["ok"] = false;
+      out["err"] = "what: battery|gyro";
+    }
+    calJson(out);
+  } else if (!strcmp(cmd, "passthrough")) {
+    const char *op = in["op"] | "";
+    bool on = !strcmp(op, "start");
+    if (!on && strcmp(op, "stop")) {
+      out["ok"] = false;
+      out["err"] = "op: start|stop";
+    } else if (hooks.bridge) {
+      reply(out);  // odpověď ještě před přepnutím USB na X20
+      hooks.bridge(on);
+      return;
+    }
+  } else if (!strcmp(cmd, "restart")) {
+    restartAfter = true;
   } else if (!strcmp(cmd, "profile")) {
     int i = in["i"] | -1;
-    if (i < 0 || i >= settings::count() || !profileHook) {
+    if (i < 0 || i >= settings::count() || !hooks.applyProfile) {
       out["ok"] = false;
       out["err"] = "neplatný profil";
     } else {
-      profileHook(i);
+      hooks.applyProfile(i);
       out["i"] = settings::active();
       out["name"] = settings::profile(settings::active()).name;
       out["hz"] = settings::profile(settings::active()).rateHz;
@@ -338,6 +453,22 @@ void handleCmd(const char *line, size_t len) {
     out["err"] = "neznámý příkaz";
   }
   reply(out);
+  if (restartAfter && hooks.restart) {
+    if (!toConsole) btlink::flush();
+    delay(300);  // odpověď musí odejít
+    hooks.restart();
+  }
+}
+
+void handleCmd(const char *line, size_t len) {
+  toConsole = false;
+  handle(line, len);
+}
+
+void handleConsoleCmd(const char *line, size_t len) {
+  toConsole = true;
+  handle(line, len);
+  toConsole = false;
 }
 
 }  // namespace proto

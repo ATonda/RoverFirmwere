@@ -348,3 +348,58 @@ Hlavní použití: měření za chůze (mapování), statické geodetické měř
 - Režim aplikace (první příkaz JSON, do odpojení): NMEA jen GGA a RMC, `$PRVR,SAT` každé 2 s.
 - STA: fronta BT, režim aplikace, EOE, počet epoch s HPPOSLLH.
 - Síla signálu (RSSI) zatím ne: čtení `esp_bt_gap_read_rssi_delta` vrací výsledek jen do GAP callbacku, který si drží BluetoothSerial (párování) – vlastní callback by ho nahradil. Kvalitu spojení zatím hodnotí aplikace podle zpoždění, ztrát a fronty.
+
+## Rozhodnutí 20. 10. 2026
+
+**Wi-Fi a webové menu – zrušit**
+- Wi-Fi AP, web, captive portal (DNS) a webové buffery z FW vyřadit. Uvolněný flash přidat do LittleFS (zásobník epoch). Kapitoly 1, 2 a 12 a části o konfiguračním režimu po implementaci přestávají platit.
+- Servis: USB konzole (115200 Bd), průchod do X20 příkazem `b`.
+- Vše z webu přechází do aplikace RoverGnss. Nové příkazy JSON ve FW: `set profiles`, `set device` (název BT), `cal` (baterie, gyro), `raw` (vzorky měření bodu), `passthrough` (průchod USB ↔ UART1 X20, konec tlačítkem nebo příkazem), test TTFF roveru (horký / teplý / studený, cíl, opakování; výsledky do aplikace).
+- Předpoklad zrušení Wi-Fi: příkazy výše hotové a ověřené s aplikací.
+- Úspora RAM za provozu jen ve statických částech (odhad jednotky až nízké desítky kB) – ověřit porovnáním řádku „RAM:“ v překladu. Hlavní přínos: žádný souběh Wi-Fi a BT, odpadá únik paměti po vypnutí AP.
+
+**Tlačítko (GPIO13)**
+- Krátký stisk: další profil (beze změny).
+- Dlouhé podržení 5 s (pípnutí při dosažení): restart ESP. X20 se nerestartuje, po startu ESP dostane znovu konfiguraci do RAM.
+- Podržení 2 s (Wi-Fi) se ruší.
+
+**Záloha X20**
+- ELT0421 má záložní superkondenzátor, X20 vestavěný krystal RTC – po vypnutí drží čas a efemeridy, dokud kondenzátor vydrží.
+- Změřit dobu zálohy: vypnout na 1 h, 4 h, 12 h, pak TTFF (3D fix).
+- Ukládání MGA-DBD v ESP (LittleFS) se nedělá: bez času nepomůže (ESP čas nezná, X20 ho po vybití kondenzátoru ztratí). S telefonem to řeší aplikace (`rover-app-specifikace.md`, kap. 7c).
+- Při krátké záloze HW úprava: větší kondenzátor nebo článek na V_BCKP na desce.
+
+**SBAS / HAS**
+- Přepínače v profilu (klíče CFG-SIGNAL / CFG-SBAS a klíč HAS ověřit v popisu rozhraní HPG 2.11).
+- Zdroj korekcí z UBX-NAV-SIG (`corrSource`) nebo NAV-CORR → kvalita v POS spolehlivě rozliší SBAS (2) a HAS (3), ne jen podle RTCM.
+
+**Filtry** – rozsah nerozhodnut. Úrovně: X20 (elevační, C/N0, PDOP maska), rover (vyřazení epoch podle σ, kvality a skoků), aplikace (filtrace trasy podle σ a kvality, vážený průměr 1/σ² u statiky).
+
+**EKF GNSS + IMU – postup**
+1. Záznam dat: při záznamu (`rec`) rover posílá do BT navíc celé rámce NAV-PVT, NAV-COV a NAV-HPPOSLLH (rychlost NED s přesností, kovariance polohy a rychlosti), ~1,1 kB/s při 5 Hz. Aplikace je uloží do surového proudu trasy spolu s IMU (0xF5).
+2. Geometrie: orientace os IMU v krabičce, rameno páky IMU → ARP antény [mm], způsob nošení.
+3. Kalibrace: klid 20–30 min (studený a zahřátý), 6 poloh po 30 s.
+4. Záznamy: chůze s RTK fix (okruh, zastávky > 60 s; výpadky se simulují vyřazením GNSS), město, les, auto, náklon.
+5. Vývoj offline (Python, EKF + zpětné vyhlazení RTS) proti referenci, pak port do ESP (reálný čas, 5 Hz).
+- Stavy: poloha, rychlost, náklon a kurz, bias gyra a akcelerometru. Měření: poloha a rychlost z X20 s σ, ZUPT v klidu.
+
+**Geometrie krabičky a IMU**
+- Krabička samostatná, jen pro GNSS: základna 100 × 85 mm, výška 40 mm, anténa (ARP) uprostřed víka.
+- Čelo = krátká strana s USB, tlačítkem a IMU. IMU (LSM6DSV16X, pravotočivý) při pohledu na čelo 25 mm od pravého boku, 24 mm ode dna, u čela.
+- Osy IMU: X vodorovně doleva (při pohledu na čelo), Y svisle dolů ke dnu, Z kolmo ven z čela.
+- Kontrola (konzole `m`): na dně ay ≈ −1000 mg, čelem nahoru az ≈ +1000 mg, levým bokem nahoru ax ≈ +1000 mg.
+- Rameno páky IMU → ARP v osách IMU: X +17,5 mm, Y −16 mm, Z ≈ −45 mm (IMU ~5 mm od čela, odhad), celkem ~51 mm.
+- Nošení: na levém boku; orientace vůči směru chůze se určí testem orientace (stání, předklon/záklon/úklony, rovná chůze).
+
+**Verze 0.13.0 – přeloženo, na HW netestováno (20. 10.):** rover bez Wi-Fi, nastavení z aplikace (rozhodnutí 20. 10.).
+- Odstraněno: Wi-Fi AP, web, captive portal, OTA zbytky, záchranný a testovací režim, měření bodu v roveru (`survey`), test přesnosti a TTFF ve FW (`testctl`, `geo`). Měření bodu i test doby do fixu řídí aplikace.
+- Tabulka oddílů: aplikace 1,5 MB (FW 1,22 MB), LittleFS 2,44 MB (`spiffs` 0x190000). Po nahrání se LittleFS naformátuje (profily, nastavení BT, zásobník epoch se smažou). Statická RAM 97,6 → 68,9 kB.
+- Tlačítko: krátký stisk = další profil, podržení 5 s = pípnutí a restart ESP (X20 se nerestartuje, po startu dostane znovu konfiguraci do RAM). Průchozí režim ukončí krátký stisk.
+- Příkazy JSON (BT i konzole USB – řádek začínající `{`): `set profiles`, `get/set device` (název BT, platí po restartu), `get cal`, `cal battery|gyro`, `passthrough start|stop`, `restart`. Řádek příkazu až 4 kB. Popis: `rover-app-specifikace.md`, kap. 10.
+- Průchozí režim USB ↔ X20 po krocích, BT běží dál (stop z aplikace).
+- Profil: `sbas`, `has` (výchozí zap). Konfigurace RAM zvlášť: CFG-SBAS-USE_DIFFCORR 0x10360004, CFG-NAVCOR-ENABLE_HOST 0x100d0001 = 1 (RTCM vždy), CFG-NAVCOR-ENABLE_GAL_HAS 0x100d0002 (ID z databáze pyubx2 pro X20, ověřit na HW; výsledek ve STA).
+- UBX-NAV-SIG 1 Hz (CFG-MSGOUT 0x20910346): signály s korekcí podle corrSource, nejčastější zdroj do STA; kvalita POS 3 (HAS) i bez fáze, když zdroj korekcí není SBAS. Parser UBX až 3 kB.
+- Záznam v aplikaci (`rec start`) a připojený BT: celé rámce NAV-PVT, NAV-COV, NAV-HPPOSLLH do BT (podklad pro EKF).
+- `get info`: `caps`, `boot` (ms od zapnutí do 3D fixu, korekcí, float, RTK fix), `upMs`, `reset` – test zálohy X20 po vypnutí.
+- Kalibrace gyra obsluhuje během 3 s X20 (UART nepřeteče).
+- Ověřit na HW: klíče CFG-NAVCOR a CFG-SBAS (NAK → STA korekceCfg 0), hodnoty corrSource pro HAS v NAV-SIG, velikost NAV-SIG, volná RAM s BT (dřív ~56 kB).

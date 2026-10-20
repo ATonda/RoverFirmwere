@@ -3,7 +3,6 @@
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 
-#include "btlink.h"
 #include "config.h"
 #include "nmea.h"
 
@@ -60,6 +59,8 @@ static void toJson(const Profile &p, JsonObject o) {
   o["led"] = p.led;
   o["antH"] = serialized(String(p.antH, 3));
   o["pco"] = serialized(String(p.pco, 3));
+  o["sbas"] = p.sbas;
+  o["has"] = p.has;
 }
 
 // Kontrola a převod jednoho profilu; chybějící položky dostanou výchozí hodnotu
@@ -113,6 +114,8 @@ static bool fromJson(JsonObjectConst o, Profile &p, String &err) {
   }
   p.antH = antH;
   p.pco = pco;
+  p.sbas = o["sbas"] | true;
+  p.has = o["has"] | true;
   return true;
 }
 
@@ -192,13 +195,7 @@ static bool parseProfiles(const char *json, bool takeActive, String &err) {
   return true;
 }
 
-static void defaultDevice() {
-  dev = Device();
-  // výchozí heslo z MAC (ROVER-303E -> rover-303e), napsat na štítek; změna v menu
-  String p = btlink::defaultName();
-  p.toLowerCase();
-  strlcpy(dev.apPass, p.c_str(), sizeof(dev.apPass));
-}
+static void defaultDevice() { dev = Device(); }
 
 static bool parseDevice(const char *json, String &err) {
   JsonDocument doc;
@@ -208,20 +205,17 @@ static bool parseDevice(const char *json, String &err) {
     return false;
   }
   Device d = dev;
-  if (doc["apPass"].is<const char *>()) {
-    const char *pw = doc["apPass"];
-    size_t l = strlen(pw);
-    if (l < 8 || l > 32) {
-      err = "heslo Wi-Fi musí mít 8–32 znaků";
-      return false;
-    }
-    strlcpy(d.apPass, pw, sizeof(d.apPass));
-  }
   if (doc["btName"].is<const char *>()) {
     const char *bn = doc["btName"];
     if (strlen(bn) >= sizeof(d.btName)) {
       err = "název Bluetooth nejvýš 24 znaků";
       return false;
+    }
+    for (const char *c = bn; *c; c++) {
+      if ((uint8_t)*c < 32 || *c == ',' || *c == '*' || *c == '$') {
+        err = "název Bluetooth: bez čárky, hvězdičky, $ a řídicích znaků";
+        return false;
+      }
     }
     strlcpy(d.btName, bn, sizeof(d.btName));
   }
@@ -231,7 +225,6 @@ static bool parseDevice(const char *json, String &err) {
 
 static String buildDeviceFile() {
   JsonDocument doc;
-  doc["apPass"] = dev.apPass;
   doc["btName"] = dev.btName;
   String s;
   serializeJson(doc, s);

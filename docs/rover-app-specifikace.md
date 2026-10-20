@@ -224,3 +224,46 @@ Cíl: kratší studený start X20 po delším vypnutí bez účtu a bez internet
   - Asistence X20 (FW 0.11.0+): po připojení bez fixu MGA-INI-TIME_UTC + POS_LLH (telefon, jinak poslední poloha roveru), záloha MGA-DBD každých 30 min při fixu (uloží se jen úplný výpis podle počítadla roveru), vrácení databáze mladší 7 dní; ruční tlačítka, studený start X20.
   - Oprávnění k poloze, služba na popředí s typem „poloha“ (poloha telefonu se zhasnutým displejem), knihovna `play-services-location` 21.3.0.
   - Kap. 7a: měření bodu už přepínače roveru nemá (statika a RAWX jsou v uživatelském profilu v Nastavení) a souhrn ukládá statiku podle potvrzení roveru – zbývalo zadání a zobrazení výšky antény v cm (rozsah 0–300 cm, varování pod 1 cm), export měření `vyska_anteny_cm`.
+- **0.7.1 (14. 10.):** úpravy po prvním testu (byt u okna, rover 3D).
+  - Párování GNSS čipu: když čas GNSS v poloze telefonu nesedí s roverem do 100 ms (Qualcomm GEN9: z 1230 poloh spárováno 2), páruje se podle hodin telefonu proti času GNSS roveru do 300 ms. Zobrazení posunu času (čas GNSS telefonu − rover, hodiny telefonu − čas GNSS, medián 60 poloh) a počtu párování podle způsobu.
+  - Test doby do fixu: „první poloha“ (i vložená z asistence – po smazání dat 1–2 s při 1 družici) zvlášť od „fixu“ s aspoň 4 družicemi v řešení; hlášená přesnost fixu; čas do hlášené přesnosti < 10 / < 5 m (bez fixu roveru pokus končí podle ní); chyba vůči roveru jen u poloh se 4+ družicemi.
+  - Družice v řešení se u telefonu počítají jako různé družice (dvoupásmová = 1), signály zvlášť.
+  - Záložka „Srovnání“.
+- **0.7.2 (14. 10.):** po jízdě autem (nepravidelná stopa telefonu, mezi tím telefonní hovor).
+  - Stopa telefonu na mapě ze všech poloh, i nespárovaných s roverem (dřív jen spárované – výpadek BT nebo párování = mezera ve stopě).
+  - U každého zdroje počet poloh, frekvence za posledních 60 s, mezery > 3 s, nejdelší a poslední mezera s časem.
+  - Stav služby na popředí s typem „poloha“ (poloha se zhasnutým displejem) a tlačítko Obnovit.
+  - Test doby do fixu: u studeného startu se Fused a Network během pokusu vypnou (drží čip v chodu; test 9:10–9:15 dal fix za 0,1–1,1 s); fix se 4+ družicemi do 5 s = neplatný studený start, označí se a do statistiky nejde.
+  - Otevřené: posun času GNSS čipu telefonu proti roveru přesně 1000 ms (hodiny telefonu − čas GNSS −115 ms) – rozhodne zpoždění dat z roveru, pak oprava v párování nebo ve FW.
+- **0.7.3 (14. 10.):** legenda mapy v Živě při zapnutých stopách telefonu (rover s barvou kvality, GNSS čip, Fused, Network), klepnutím sbalit / rozbalit.
+
+## 10. Protokol od FW 0.13.0 (20. 10.) – rover bez Wi-Fi, nastavení z aplikace
+
+**`$PRVR,STA` – nová pole na konci** (za ACKAIDING): frekvence [Hz] (0.12.0), zdroj korekcí z UBX-NAV-SIG (−1 žádný, 1 SBAS, 2 BeiDou, 3 RTCM2, 4 RTCM3 OSR, 5 RTCM3 SSR, 6 QZSS SLAS, 7 SPARTN, 8 CLAS, vyšší = HAS podle FW X20), signálů použitých s korekcí, výsledek nastavení korekcí SBAS/HAS (1 OK / 0 NAK / −1), průchozí režim (0/1), rámce NAV při záznamu (0/1). Pole měření bodu (fáze, čas, vzorků) jsou 0 – rover měření bodu nemá, řídí ho aplikace.
+
+**Kvalita v `$PRVR,POS`:** 2 = SBAS (korekce bez fáze, zdroj SBAS nebo neznámý), 3 = HAS (bez RTCM: carrSoln > 0 nebo korekce z jiného zdroje než SBAS podle NAV-SIG).
+
+**Záznam (`rec start`):** rover posílá navíc celé rámce UBX NAV-PVT, NAV-COV a NAV-HPPOSLLH (před `$PRVR,POS` téže epochy, ~1,1 kB/s při 5 Hz) – aplikace je ukládá do surového proudu trasy spolu s IMU (0xF5). Podklad pro EKF offline.
+
+**Nové příkazy JSON** (stejné přijímá i konzole USB – řádek začínající `{`):
+- `{"cmd":"set","what":"profiles","data":{"active":0,"default":0,"profiles":[…]}}` – formát jako `get profiles`; profil má navíc `sbas`, `has` (bool). Odpověď s uloženými profily, profil se hned pošle do X20.
+- `{"cmd":"get","what":"device"}` → `{"data":{"btName":"…"},"default":"ROVER-xxxx","name":"…"}`; `{"cmd":"set","what":"device","data":{"btName":"…"}}` – platí po restartu (`"restart":true`).
+- `{"cmd":"get","what":"cal"}` → `{"gyro":[x,y,z],"div":…,"bat":…,"batOk":…}`; `{"cmd":"cal","what":"battery","v":3.86}`; `{"cmd":"cal","what":"gyro"}` (3 s v klidu).
+- `{"cmd":"passthrough","op":"start|stop"}` – průchozí režim USB ↔ X20 (u-center na PC), konec i krátkým stiskem tlačítka.
+- `{"cmd":"restart"}` – restart ESP po odeslání odpovědi.
+- `get info` navíc: `caps` (`set,cal,pass,navrec,sig,boot`), `boot` {fix, corr, float, fixRtk} = ms od zapnutí do prvního 3D fixu, korekcí, float, RTK fix (−1 = zatím ne), `upMs`, `reset` (esp_reset_reason: 1 zapnutí napájení, 3 SW restart).
+- Délka řádku příkazu až 4 kB (dřív 511 znaků).
+
+**Tlačítko roveru:** krátký stisk = další profil, podržení 5 s = pípnutí a restart ESP (X20 běží dál).
+
+## 11. Stav aplikace 0.8.0 (20. 10., napsáno bez překladu – ověřit v Android Studiu)
+
+- **Karta Test** (nová, mezi Telefon a Nastavení):
+  - Testovací záznam pro EKF: scénáře Klid 30 min (sám skončí), 6 poloh (řízené kroky 30 s s odpočtem a pípnutím), Orientace při nošení (stání, předklon, záklon, úklony, rovná chůze), Volné prostranství s RTK, Město, Les, Auto. U každého postup, metadata (nošení, orientace čela krabičky, poznámka), tlačítka značek s časem telefonu i GNSS.
+  - Záznam = trasa „TEST …“ se surovým proudem vždy (i bez volby v profilu) a s každou epochou; metadata, značky a geometrie IMU (osy, rameno páky) v `files/tests/test_<trasa>.json`.
+  - Uložené testy: export ZIP (test.json, body.csv se všemi epochami, diag.csv, raw.log).
+  - Doba do fixu roveru: horký / teplý / studený start příkazem, cíl 3D / korekce / float / RTK fix, opakování, limit, pauza; čas do 3D, korekcí, float, fix; min / medián / max; CSV.
+  - Start po vypnutí (záloha X20): po zapnutí napájení roveru (FW 0.13.0+) zapíše dobu vypnutí (od posledních dat v aplikaci) a dobu od zapnutí do 3D fixu a korekcí; dotaz na rover každých 10 s, dokud časy nejsou známé (do 30 min od zapnutí).
+- **Nastavení → Nastavení roveru** (FW 0.13.0+): editor profilů roveru (název, 1/5/10 Hz, dynamický model, elevační maska, SBAS, HAS, bzučák, věty NMEA; výchozí profil, kopie, smazání, uložení do roveru), název Bluetooth, kalibrace baterie a gyra, průchozí režim USB ↔ X20, restart roveru; zdroj korekcí z NAV-SIG a výsledek nastavení SBAS/HAS.
+- Kvalita 2 se zobrazuje jako „SBAS“.
+- Diagnostika k trase (Diag CSV) už ukládá frontu BT, zpoždění, ztráty a volnou RAM – podklad k poklesu kvality BT v autě.

@@ -1,10 +1,10 @@
 // Rover GNSS – firmware ESP32
 // Specifikace: docs/rover-firmware-specifikace.md
 //
-// Sériová konzole 115200 Bd, příkaz + Enter, "h" = nápověda.
+// Sériová konzole 115200 Bd, příkaz + Enter, "h" = nápověda. Řádek začínající '{' = příkaz JSON
+// (stejný jako z aplikace RoverGnss), odpověď do konzole.
 
 #include <Arduino.h>
-#include <esp_ota_ops.h>
 #include <esp_timer.h>
 
 #include "epochbuf.h"
@@ -21,20 +21,6 @@
 #include "power.h"
 #include "proto.h"
 #include "settings.h"
-#include "survey.h"
-#include "testctl.h"
-#include "webui.h"
-
-// Záchranný režim: počet pádů po sobě přežije restart (ne vypnutí napájení)
-static constexpr uint32_t CRASH_MAGIC = 0x52565231;
-RTC_NOINIT_ATTR static uint32_t crashMagic;
-RTC_NOINIT_ATTR static uint32_t crashCount;
-// Požadavek na start v testovacím režimu (nastaví web nebo konzole, platí jen pro jeden start)
-static constexpr uint32_t TEST_MAGIC = 0x54455354;
-RTC_NOINIT_ATTR static uint32_t testBootMagic;
-
-enum class Mode { Run, Config, Test, Rescue };
-static Mode mode = Mode::Run;
 
 static bool liveOn = false;
 static bool nmeaEcho = false;            // NMEA i do konzole
@@ -58,12 +44,11 @@ static void printHelp() {
   Serial.println("g       kalibrace gyra (přístroj v klidu, 3 s)");
   Serial.println("k3860   kalibrace baterie – změřené napětí v mV");
   Serial.println("n       výpis NMEA do konzole zap/vyp");
-  Serial.println("b       průchozí režim USB <-> X20 (konec tlačítkem)");
+  Serial.println("b       průchozí režim USB <-> X20 (konec krátkým stiskem tlačítka nebo z aplikace)");
   Serial.println("p       seznam profilů, p2 = přepnout na profil 2");
-  Serial.println("w       Wi-Fi AP zap (webové menu, BT běží dál); vypnutí podržením tlačítka 2 s nebo z webu");
-  Serial.println("wt      testovací režim po restartu (Wi-Fi AP + BT současně, záložka Test)");
   Serial.println("xh xw xc  restart příjmu X20: horký / teplý / studený start");
-  Serial.println("t1      test tlačítek 20 s: Wi-Fi/profil (GPIO13) a BOOT (GPIO0) – stav a události, konec klávesou");
+  Serial.println("{...}   příkaz JSON jako z aplikace, např. {\"cmd\":\"get\",\"what\":\"profiles\"}");
+  Serial.println("t1      test tlačítek 20 s: profil/restart (GPIO13) a BOOT (GPIO0) – stav a události, konec klávesou");
   Serial.println("t2      test pieza (GPIO25): tóny 500–4000 Hz, pak ukázky signálů (fix, varování, profil)");
   Serial.println("t3      test LED WS2812 (GPIO26): červená, zelená, modrá, bílá po 1 s");
   Serial.println("t4      souhrn: sken I2C, X20, PPS, baterie (pin i přepočet), tlačítka, paměť, důvod startu");
@@ -72,8 +57,7 @@ static void printHelp() {
 }
 
 static void printInfo() {
-  const esp_partition_t *run = esp_ota_get_running_partition();
-  Serial.printf("Firmware: %s %s, oddíl %s\n", FW_NAME, FW_VERSION, run ? run->label : "?");
+  Serial.printf("Firmware: %s %s\n", FW_NAME, FW_VERSION);
   const gnss::Info &gi = gnss::info();
   if (gi.valid) {
     Serial.printf("X20: %s, FW %s (%s), HW %s, UART1 %lu Bd\n", gi.mod, gi.fwver, gi.sw, gi.hw,
@@ -98,8 +82,9 @@ static void printInfo() {
                 power::valid() ? "" : " – CHYBA MĚŘENÍ", power::dividerFactor());
   Serial.printf("Bluetooth SPP: %s\n", btlink::name());
   const settings::Profile &pr = settings::profile(settings::active());
-  Serial.printf("Profil: %d/%d %s (%u Hz, %s, maska %d°)\n", settings::active() + 1, settings::count(), pr.name,
-                pr.rateHz, settings::dynName(pr.dyn), pr.elevMask);
+  Serial.printf("Profil: %d/%d %s (%u Hz, %s, maska %d°, SBAS %s, HAS %s)\n", settings::active() + 1,
+                settings::count(), pr.name, pr.rateHz, settings::dynName(pr.dyn), pr.elevMask, pr.sbas ? "zap" : "vyp",
+                pr.has ? "zap" : "vyp");
 }
 
 static void printStatus() {
@@ -162,8 +147,10 @@ static void printStatus() {
                 (unsigned long)bs.pairFail, btTx,
                 (unsigned long)bs.txDropped, btRx, (unsigned long)bs.rtcmOk, (unsigned long)bs.rtcmBad);
   if (bs.rtcmOk) Serial.printf(" posl. %u před %.1f s", bs.rtcmLastType, (millis() - bs.rtcmLastMs) / 1000.0f);
-  Serial.printf(" | GGA kval. %d kor. %s | HDOP %.2f σN %.2f σE %.2f σD %.2f m%s\n", nmea::ggaQuality(),
-                p.corrAge ? "ano" : "-", dp.hDOP, cv.sN, cv.sE, cv.sD, cv.valid ? "" : " (kov. neplatná)");
+  const gnss::SigSummary &sg = gnss::sig();
+  Serial.printf(" | GGA kval. %d kor. %s (zdroj %d, sig. %u/%u) | HDOP %.2f σN %.2f σE %.2f σD %.2f m%s\n",
+                nmea::ggaQuality(), p.corrAge ? "ano" : "-", sg.dominant, sg.corrUsed, sg.n, dp.hDOP, cv.sN, cv.sE,
+                cv.sD, cv.valid ? "" : " (kov. neplatná)");
 }
 
 static void printImuSamples() {
@@ -198,30 +185,22 @@ static void initGnss(uint32_t searchMs = 0) {
   Serial.printf("X20: %s\n", gnss::initResultText(r));
 }
 
-static bool bridgeExit() {
-  // konec průchozího režimu stiskem tlačítka (odrušeno 50 ms)
-  static uint32_t pressMs = 0;
-  if (digitalRead(PIN_BUTTON) == LOW) {
-    if (pressMs == 0) pressMs = millis();
-    if (millis() - pressMs > 50) {
-      pressMs = 0;
-      return true;
-    }
-  } else {
-    pressMs = 0;
-  }
-  return false;
+// Průchozí režim USB <-> X20 po krocích: BT běží dál (příkaz stop z aplikace), konec i krátkým stiskem tlačítka
+static void bridgeStart() {
+  if (gnss::bridgeActive()) return;
+  Serial.printf("[průchozí] USB <-> X20 na %lu Bd. Zavři monitor, v u-center otevři COM na této rychlosti.\n",
+                (unsigned long)gnss::baud());
+  Serial.println("[průchozí] konec: krátký stisk tlačítka, příkaz z aplikace nebo vypnutí.");
+  liveOn = false;
+  gnss::bridgeBegin();
+  button::resetEvents();
 }
 
-static void bridgeMode() {
-  Serial.printf("\nPrůchozí režim USB <-> X20 na %lu Bd.\n", (unsigned long)gnss::baud());
-  Serial.printf("Zavři monitor, v u-center 2 otevři COM port na %lu Bd.\n", (unsigned long)gnss::baud());
-  Serial.println("Ukončení: stisk tlačítka.");
-  while (digitalRead(PIN_BUTTON) == LOW) delay(10);
-  gnss::bridge(bridgeExit);
-  while (digitalRead(PIN_BUTTON) == LOW) delay(10);
+static void bridgeStop() {
+  if (!gnss::bridgeActive()) return;
+  gnss::bridgeEnd();
   button::resetEvents();
-  Serial.println("\nPrůchozí režim ukončen. Konfigurace X20 se znovu posílá do RAM.");
+  Serial.println("\n[průchozí] ukončen, konfigurace X20 se znovu posílá do RAM.");
   // u-center mohl rychlost nebo výstupy změnit – obnovit provozní stav
   initGnss();
 }
@@ -232,102 +211,23 @@ static void applyProfile(int i, bool reconfigure) {
   settings::setActive(i);
   const settings::Profile &p = settings::profile(settings::active());
   gnss::setParams(1000 / p.rateHz, settings::dynCode(p.dyn), p.elevMask);
+  gnss::setCorr(p.sbas, p.has);
   nmea::setMask(proto::appMode() ? (uint8_t)(p.nmea & (nmea::GGA | nmea::RMC)) : p.nmea);
   buzzer::setEnabled(p.buzzer);
-  Serial.printf("[profil] %d/%d %s – %u Hz, %s, maska %d°\n", settings::active() + 1, settings::count(), p.name,
-                p.rateHz, settings::dynName(p.dyn), p.elevMask);
+  Serial.printf("[profil] %d/%d %s – %u Hz, %s, maska %d°, SBAS %s, HAS %s\n", settings::active() + 1,
+                settings::count(), p.name, p.rateHz, settings::dynName(p.dyn), p.elevMask, p.sbas ? "zap" : "vyp",
+                p.has ? "zap" : "vyp");
   if (reconfigure) gnss::configure(true);
 }
 
 static void listProfiles() {
   for (int i = 0; i < settings::count(); i++) {
     const settings::Profile &p = settings::profile(i);
-    Serial.printf("%c%c %d  %-24s %2u Hz  %-10s maska %2d°\n", i == settings::active() ? '>' : ' ',
+    Serial.printf("%c%c %d  %-24s %2u Hz  %-10s maska %2d°  SBAS %s HAS %s\n", i == settings::active() ? '>' : ' ',
                   i == settings::defaultIndex() ? '*' : ' ', i + 1, p.name, p.rateHz, settings::dynName(p.dyn),
-                  p.elevMask);
+                  p.elevMask, p.sbas ? "zap" : "vyp", p.has ? "zap" : "vyp");
   }
   Serial.println("> aktivní, * výchozí po startu");
-}
-
-// ---------------------------------------------------------------- konfigurační režim
-static bool btStoppedForAp = false;  // BT vypnuto, protože se vedle něj Wi-Fi nevešla do RAM
-
-static bool startWeb(bool rescue) {
-  Serial.printf("[Wi-Fi] start AP, volná RAM %lu B (největší blok %lu B)\n", (unsigned long)ESP.getFreeHeap(),
-                (unsigned long)ESP.getMaxAllocHeap());
-  // Wi-Fi AP + web potřebuje víc RAM, než zbývá vedle BT (~56 kB volné). Rozhodnout PŘED startem Wi-Fi –
-  // nepovedený start nechá ovladač Wi-Fi napůl inicializovaný a vypnutí BT pak zamrzne.
-  if (btlink::active() && (ESP.getFreeHeap() < WIFI_MIN_HEAP || ESP.getMaxAllocHeap() < WIFI_MIN_BLOCK)) {
-    Serial.println("[Wi-Fi] málo RAM vedle Bluetooth – BT se po dobu zapnuté Wi-Fi vypne");
-    btlink::end();
-    btStoppedForAp = true;
-    delay(100);
-    Serial.printf("[Wi-Fi] volná RAM bez BT %lu B (největší blok %lu B)\n", (unsigned long)ESP.getFreeHeap(),
-                  (unsigned long)ESP.getMaxAllocHeap());
-  }
-  if (!webui::begin(rescue)) {
-    Serial.println("[Wi-Fi] start AP selhal");
-    return false;
-  }
-  Serial.printf("[Wi-Fi] AP %s, heslo %s, http://192.168.4.1/\n", webui::ssid(), webui::password());
-  if (!rescue) Serial.println("[Wi-Fi] konec: tlačítko „Uložit a vypnout Wi-Fi“ nebo podržení tlačítka přístroje 2 s");
-  Serial.printf("[Wi-Fi] Bluetooth %s, volná RAM %lu B\n", btlink::active() ? "běží" : "vypnuto",
-                (unsigned long)ESP.getFreeHeap());
-  return true;
-}
-
-static void enterConfig() {
-  if (mode != Mode::Run) return;
-  Serial.println("[režim] konfigurace – Wi-Fi AP");
-  if (!startWeb(false)) {
-    buzzer::beep(800, 200, 150, 3);
-    return;
-  }
-  mode = Mode::Config;
-  button::resetEvents();  // stisk, kterým se režim zapnul, nesmí režim hned zase ukončit
-  buzzer::beep(2000, 100, 80, 2);
-}
-
-static void bridgeStart() {
-  if (gnss::bridgeActive()) return;
-  Serial.printf("[průchozí] USB <-> X20 na %lu Bd. Zavři monitor, v u-center otevři COM na této rychlosti.\n",
-                (unsigned long)gnss::baud());
-  Serial.println("[průchozí] konec: tlačítko na webu, podržení tlačítka přístroje nebo vypnutí.");
-  liveOn = false;
-  gnss::bridgeBegin();
-  webui::setBridge(true);
-}
-
-static void bridgeStop();
-
-static void restartNow(const char *why);
-
-// Vypnout AP bez restartu – BT, výpočet i měření bodu běží dál
-static void exitConfig() {
-  if (mode != Mode::Config && mode != Mode::Test) return;
-  if (webui::needsRestart() && !survey::running()) {
-    restartNow("změněné nastavení Wi-Fi/BT");
-    return;
-  }
-  bridgeStop();
-  webui::end();
-  mode = Mode::Run;
-  if (btStoppedForAp) {
-    btStoppedForAp = false;
-    if (btlink::begin(settings::device().btName)) Serial.printf("Bluetooth SPP: %s (znovu zapnuto)\n", btlink::name());
-    else Serial.println("Bluetooth: nový start selhal");
-  }
-  Serial.println("[režim] Wi-Fi AP vypnuto, provoz s Bluetooth");
-  buzzer::stop();
-  buzzer::tones2(2500, 1500);
-}
-
-static void bridgeStop() {
-  if (!gnss::bridgeActive()) return;
-  gnss::bridgeEnd();
-  webui::setBridge(false);
-  Serial.println("\n[průchozí] ukončen, konfigurace X20 se znovu posílá do RAM.");
-  initGnss();
 }
 
 static void restartNow(const char *why) {
@@ -365,33 +265,32 @@ static void flushConsoleInput() {
 static void testButtons() {
   flushConsoleInput();
   pinMode(PIN_BOOT, INPUT_PULLUP);
-  Serial.printf("Test tlačítek 20 s (konec libovolnou klávesou). Wi-Fi/profil = GPIO%d, BOOT = GPIO%d.\n", PIN_BUTTON,
-                PIN_BOOT);
+  Serial.printf("Test tlačítek 20 s (konec libovolnou klávesou). Profil/restart = GPIO%d, BOOT = GPIO%d.\n",
+                PIN_BUTTON, PIN_BOOT);
   button::resetEvents();
   button::poll();
   bool btn = button::pressed();
   bool boot = digitalRead(PIN_BOOT) == LOW, bootRaw = boot;
   uint32_t bootChangeMs = 0, btnDownMs = millis(), bootDownMs = millis();
-  Serial.printf("  výchozí stav: Wi-Fi/profil %s, BOOT %s\n", btn ? "STISKNUTO" : "uvolněno", boot ? "STISKNUTO" : "uvolněno");
+  Serial.printf("  výchozí stav: profil/restart %s, BOOT %s\n", btn ? "STISKNUTO" : "uvolněno", boot ? "STISKNUTO" : "uvolněno");
   uint32_t t0 = millis();
   while (millis() - t0 < 20000) {
     uint32_t now = millis();
-    // tlačítko Wi-Fi/profil – odrušené v modulu button
+    // tlačítko profil/restart – odrušené v modulu button
     button::Event e = button::poll();
     bool b = button::pressed();
     if (b != btn) {
       btn = b;
       if (b) {
         btnDownMs = now;
-        Serial.printf("  %5.1f s  Wi-Fi/profil: stisk\n", (now - t0) / 1000.0f);
+        Serial.printf("  %5.1f s  profil/restart: stisk\n", (now - t0) / 1000.0f);
       } else {
-        Serial.printf("  %5.1f s  Wi-Fi/profil: uvolnění po %lu ms\n", (now - t0) / 1000.0f,
+        Serial.printf("  %5.1f s  profil/restart: uvolnění po %lu ms\n", (now - t0) / 1000.0f,
                       (unsigned long)(now - btnDownMs));
       }
     }
     if (e == button::Event::Short) Serial.println("           -> událost KRÁTKÝ STISK (v provozu: další profil)");
-    if (e == button::Event::Long) Serial.println("           -> událost PODRŽENÍ 2 s (v provozu: Wi-Fi zap, v konfiguraci/testu: Wi-Fi vyp)");
-    if (e == button::Event::Exit) Serial.println("           -> událost PODRŽENÍ 5 s (bez akce)");
+    if (e == button::Event::Long) Serial.println("           -> událost PODRŽENÍ 5 s (v provozu: restart ESP; v testu bez akce)");
     // BOOT – odrušení 30 ms
     bool r = digitalRead(PIN_BOOT) == LOW;
     if (r != bootRaw) {
@@ -506,26 +405,24 @@ static void testSummary() {
   Serial.println("         (s připojeným USB nabíječka nabíjí – napětí je nabíjecí, ne klidové)");
   // tlačítka
   pinMode(PIN_BOOT, INPUT_PULLUP);
-  Serial.printf("Tlačítka: Wi-Fi/profil (GPIO%d) %s, BOOT (GPIO%d) %s\n", PIN_BUTTON,
+  Serial.printf("Tlačítka: profil/restart (GPIO%d) %s, BOOT (GPIO%d) %s\n", PIN_BUTTON,
                 digitalRead(PIN_BUTTON) == LOW ? "STISKNUTO" : "uvolněno", PIN_BOOT,
                 digitalRead(PIN_BOOT) == LOW ? "STISKNUTO" : "uvolněno");
   // systém
-  const esp_partition_t *run = esp_ota_get_running_partition();
-  Serial.printf("Systém: FW %s, oddíl %s, důvod startu %d, běh %lu s, volná RAM %lu B (min. %lu B)\n", FW_VERSION,
-                run ? run->label : "?", (int)esp_reset_reason(), (unsigned long)(millis() / 1000),
-                (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap());
-  Serial.printf("Režim: %s, BT %s\n",
-                mode == Mode::Run      ? "provoz"
-                : mode == Mode::Config ? "konfigurace"
-                : mode == Mode::Test   ? "test (Wi-Fi + BT)"
-                                       : "záchranný",
-                btlink::name());
+  Serial.printf("Systém: FW %s, důvod startu %d, běh %lu s, volná RAM %lu B (min. %lu B, největší blok %lu B)\n",
+                FW_VERSION, (int)esp_reset_reason(), (unsigned long)(millis() / 1000), (unsigned long)ESP.getFreeHeap(),
+                (unsigned long)ESP.getMinFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+  Serial.printf("Bluetooth %s, záznam v aplikaci %s\n", btlink::name(), ebuf::recording() ? "ANO" : "ne");
 }
 
 // ---------------------------------------------------------------- konzole
 static void handleCommand(String cmd) {
   cmd.trim();
   if (!cmd.length()) return;
+  if (cmd[0] == '{') {
+    proto::handleConsoleCmd(cmd.c_str(), cmd.length());
+    return;
+  }
   char c = tolower(cmd[0]);
   switch (c) {
     case 'h': printHelp(); break;
@@ -538,7 +435,7 @@ static void handleCommand(String cmd) {
     case 'm': printImuSamples(); break;
     case 'g':
       Serial.println("Kalibrace gyra – nehýbej přístrojem 3 s...");
-      if (imu::calibrateGyro(3000)) {
+      if (imu::calibrateGyro(3000, gnss::poll)) {
         float bx, by, bz;
         imu::gyroBias(bx, by, bz);
         Serial.printf("Bias gyra %.3f %.3f %.3f °/s (uloženo).\n", bx, by, bz);
@@ -561,10 +458,7 @@ static void handleCommand(String cmd) {
       nmeaEcho = !nmeaEcho;
       Serial.printf("Výpis NMEA do konzole %s\n", nmeaEcho ? "ZAP" : "VYP");
       break;
-    case 'b':
-      if (mode == Mode::Run) bridgeMode();
-      else bridgeStart();
-      break;
+    case 'b': bridgeStart(); break;
     case 'p':
       if (cmd.length() > 1) {
         int i = cmd.substring(1).toInt();
@@ -572,14 +466,6 @@ static void handleCommand(String cmd) {
         else Serial.println("Neplatné číslo profilu.");
       } else {
         listProfiles();
-      }
-      break;
-    case 'w':
-      if (cmd.length() > 1 && tolower(cmd[1]) == 't') {
-        testBootMagic = TEST_MAGIC;
-        restartNow("testovací režim");
-      } else {
-        enterConfig();
       }
       break;
     case 't': {
@@ -619,34 +505,10 @@ void setup() {
   delay(200);
   Serial.printf("\n\n%s %s\n", FW_NAME, FW_VERSION);
 
-  // Potvrdit běžící OTA oddíl (ochrana proti návratu na předchozí verzi)
-  esp_ota_mark_app_valid_cancel_rollback();
-
-  // Počítadlo pádů po sobě (panic, watchdog). Jiný důvod startu ho nuluje.
-  esp_reset_reason_t rr = esp_reset_reason();
-  if (crashMagic != CRASH_MAGIC) {
-    crashMagic = CRASH_MAGIC;
-    crashCount = 0;
-  }
-  if (rr == ESP_RST_PANIC || rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT || rr == ESP_RST_WDT) crashCount++;
-  else crashCount = 0;
-  bool testBoot = testBootMagic == TEST_MAGIC && rr == ESP_RST_SW;
-  testBootMagic = 0;
-
   button::begin();
   power::begin();
   if (!settings::begin()) Serial.println("Paměť nastavení (LittleFS): chyba, použity výchozí profily");
-  testctl::begin();
-  if (!survey::begin()) Serial.println("Měření bodů (/meas.json): chyba čtení");
   ebuf::begin();
-
-  if (crashCount >= RESCUE_CRASHES) {
-    Serial.printf("ZÁCHRANNÝ REŽIM: %lu pádů po sobě – jen Wi-Fi AP s aktualizací firmwaru\n",
-                  (unsigned long)crashCount);
-    mode = Mode::Rescue;
-    startWeb(true);
-    return;
-  }
 
   if (imu::begin()) Serial.printf("IMU: LSM6DSV16X na 0x%02X, 120 Hz\n", imu::address());
   else if (imu::present()) Serial.println("IMU: nalezeno, ale nastavení se nepodařilo ověřit");
@@ -657,7 +519,18 @@ void setup() {
   else Serial.println("Bluetooth: start selhal");
   nmea::setSink(nmeaSink);
   btlink::setCmdHandler(proto::handleCmd);
-  proto::setProfileHook([](int i) { applyProfile(i, true); });
+  {
+    proto::Hooks h;
+    h.applyProfile = [](int i) { applyProfile(i, true); };
+    h.bridge = [](bool on) {
+      if (on) bridgeStart();
+      else bridgeStop();
+    };
+    h.bridgeActive = []() { return gnss::bridgeActive(); };
+    h.restart = []() { restartNow("příkaz z aplikace"); };
+    h.idle = gnss::poll;
+    proto::setHooks(h);
+  }
   gnss::onPvt([]() { pvtPending = true; });
   // surová data měření bodu (RAWX/SFRBX) celým rámcem UBX do BT, mimo dávky vět
   gnss::onRawFrame([](const uint8_t *f, uint16_t n) {
@@ -672,18 +545,14 @@ void setup() {
     btlink::flush();
   });
   gnss::onSat([]() { satPending = true; });
+  // Záznam v aplikaci: celé NAV-PVT, NAV-COV, NAV-HPPOSLLH do dávky BT (před $PRVR,POS téže epochy)
+  gnss::onNavFrame([](const uint8_t *f, uint16_t n) {
+    if (proto::navRecording()) btlink::send((const char *)f, n);
+  });
 
   applyProfile(settings::defaultIndex(), false);
   gnss::begin();
   initGnss(15000);  // po zapnutí napájení X20 nabíhá déle než ESP
-
-  if (testBoot) {
-    Serial.println("[režim] TEST – Wi-Fi AP a Bluetooth současně");
-    if (startWeb(false)) {
-      mode = Mode::Test;
-      webui::setTestMode(true);
-    }
-  }
 
   printInfo();
   printHelp();
@@ -701,46 +570,26 @@ static void readConsole() {
         handleCommand(line);
         line = "";
       }
-    } else if (line.length() < 32) {
+    } else if (line.length() < 4096) {  // příkaz JSON (set profiles) může mít několik kB
       line += ch;
     }
-  }
-}
-
-static void handleWebEvent(webui::Event e) {
-  switch (e) {
-    case webui::Event::Restart: restartNow("konec konfigurace"); break;
-    case webui::Event::ApOff: exitConfig(); break;
-    case webui::Event::ProfilesChanged: applyProfile(settings::active(), true); break;
-    case webui::Event::BridgeStart: bridgeStart(); break;
-    case webui::Event::BridgeStop: bridgeStop(); break;
-    case webui::Event::TestMode:
-      testBootMagic = TEST_MAGIC;
-      restartNow("testovací režim");
-      break;
-    default: break;
   }
 }
 
 void loop() {
   static uint32_t lastPrint = 0;
 
-  // Po minutě bez pádu vynulovat počítadlo pádů
-  if (crashCount && millis() > 60000) crashCount = 0;
   power::update();
 
-  if (mode == Mode::Rescue) {
-    handleWebEvent(webui::poll());
-    readConsole();
-    return;
-  }
-
-  // Průchozí režim: USB patří X20, konzole i čtení X20 stojí, web běží
+  // Průchozí režim: USB patří X20, konzole i čtení X20 stojí; BT běží (příkaz stop z aplikace)
   if (gnss::bridgeActive()) {
     gnss::bridgeStep();
     imu::poll();
-    handleWebEvent(webui::poll());
-    if (button::poll() == button::Event::Long) bridgeStop();
+    imu::Sample drop;
+    while (imu::pop(drop)) {
+    }
+    btlink::poll();
+    if (button::poll() != button::Event::None) bridgeStop();
     return;
   }
 
@@ -763,15 +612,9 @@ void loop() {
   bool newPvt = pvtPending, newSat = satPending;
   pvtPending = false;
   satPending = false;
-  if (newPvt) {
-    testctl::onPvt();
-    survey::onPvt();
-  }
-  testctl::poll();
-  survey::poll();
   buzzer::poll();
 
-  {  // BT běží ve všech režimech kromě záchranného
+  {
     btlink::poll();
     ebuf::poll();
     {
@@ -817,12 +660,10 @@ void loop() {
       default: break;
     }
   }
-  if (mode == Mode::Config || mode == Mode::Test) handleWebEvent(webui::poll());
 
-  // Spotřebitel vzorků IMU – zde bude EKF (krok 6); zatím se fronta jen vyprazdňuje
+  // Spotřebitel vzorků IMU – zde bude EKF (krok 7); zatím pohyb pro POS a surová data do aplikace
   imu::Sample smp;
   while (imu::pop(smp)) {
-    survey::onImu(smp);
     proto::onImu(smp);
     imustream::onImu(smp);
   }
@@ -834,13 +675,16 @@ void loop() {
   }
 
   switch (button::poll()) {
-    case button::Event::Short:
-      if (mode == Mode::Run) applyProfile(settings::next(), true);
+    case button::Event::Short: applyProfile(settings::next(), true); break;
+    case button::Event::Long: {  // podržení 5 s: pípnutí a restart ESP (X20 dostane po startu znovu konfiguraci)
+      buzzer::stop();
+      buzzer::start(2000);
+      uint32_t t0 = millis();
+      while (millis() - t0 < 300) delay(1);
+      buzzer::stop();
+      restartNow("podržení tlačítka 5 s");
       break;
-    case button::Event::Long:  // podržení 2 s: Wi-Fi zap / vyp
-      if (mode == Mode::Run) enterConfig();
-      else if (mode == Mode::Config || mode == Mode::Test) exitConfig();
-      break;
+    }
     default: break;
   }
 

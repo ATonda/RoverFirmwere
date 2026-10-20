@@ -4,6 +4,7 @@
 // rover -> app: $PRVR,POS (každá epocha), $PRVR,STA (1 Hz), $PRVR,SAT (1 Hz, po 12 družicích),
 //               {json} odpovědi na příkazy; vedle toho NMEA beze změny
 // app -> rover: RTCM3 (0xD3…) do X20, {json} příkaz na jednom řádku (ukončený \n)
+// Stejné příkazy JSON přijímá i konzole USB (řádek začínající '{'), odpověď jde zpět do konzole.
 #pragma once
 #include <Arduino.h>
 
@@ -17,8 +18,8 @@ static constexpr int VERSION = 1;
 enum Quality : uint8_t {
   Q_NONE = 0,   // bez fixu
   Q_GNSS = 1,   // 2D/3D bez korekcí
-  Q_DGNSS = 2,  // SBAS / DGNSS
-  Q_HAS = 3,    // HAS (PPP) – carrSoln > 0 bez RTCM; souřadnice ITRF2020
+  Q_DGNSS = 2,  // SBAS / DGNSS (podle NAV-SIG zdroj korekcí SBAS nebo neznámý)
+  Q_HAS = 3,    // HAS (PPP) – bez RTCM: carrSoln > 0, nebo korekce z jiného zdroje než SBAS; souřadnice ITRF2020
   Q_FIX = 4,    // RTK fix (RTCM z mobilu)
   Q_FLOAT = 5,  // RTK float
   Q_DR = 6      // jen dopočet
@@ -54,9 +55,27 @@ bool moving();
 
 // Příkaz JSON z mobilu (jeden řádek bez \n); odpověď jde hned do BT
 void handleCmd(const char *line, size_t len);
+// Totéž z konzole USB – odpověď do Serial
+void handleConsoleCmd(const char *line, size_t len);
 
-// Přepnutí profilu provede main (applyProfile)
-void setProfileHook(void (*fn)(int index));
+// Akce, které provede main
+struct Hooks {
+  void (*applyProfile)(int index) = nullptr;  // přepnout profil a poslat do X20
+  void (*bridge)(bool on) = nullptr;          // průchozí režim USB <-> X20
+  bool (*bridgeActive)() = nullptr;
+  void (*restart)() = nullptr;                // restart ESP (po odeslání odpovědi)
+  void (*idle)() = nullptr;                   // obsluha X20 během blokující akce (kalibrace gyra)
+};
+void setHooks(const Hooks &h);
+
+// Nastavení z aplikace (FW 0.13.0, náhrada webového menu):
+//   {"cmd":"set","what":"profiles","data":{"active":0,"default":0,"profiles":[…]}}  – stejný formát jako get profiles
+//   {"cmd":"get","what":"device"} / {"cmd":"set","what":"device","data":{"btName":"…"}}  – název BT platí po restartu
+//   {"cmd":"get","what":"cal"}  – bias gyra, koeficient děliče baterie
+//   {"cmd":"cal","what":"battery","v":3.86}  – změřené napětí baterie [V]
+//   {"cmd":"cal","what":"gyro"}  – přístroj v klidu, 3 s
+//   {"cmd":"passthrough","op":"start|stop"}  – průchozí režim USB <-> X20 (konec i krátkým stiskem tlačítka)
+//   {"cmd":"restart"}
 
 // Měření bodu z aplikace: {"cmd":"meas","op":"start","static":true,"raw":false} / {"cmd":"meas","op":"stop"}
 // Statický model X20 a surová data RAWX/SFRBX do BT po dobu měření; odpojení BT měření ukončí.
@@ -67,5 +86,8 @@ void setProfileHook(void (*fn)(int index));
 // Režim aplikace: zapne ho první příkaz z RoverGnss, vypne odpojení BT.
 // V režimu aplikace jde z NMEA jen GGA a RMC a $PRVR,SAT každé 2 s (méně dat přes BT).
 bool appMode();
+
+// Záznam v aplikaci a připojený BT: rover posílá navíc celé rámce NAV-PVT, NAV-COV a NAV-HPPOSLLH (EKF offline)
+bool navRecording();
 
 }  // namespace proto

@@ -1,10 +1,10 @@
-// Tlačítko (GPIO13 proti GND): krátký stisk, podržení 2 s, podržení 5 s
+// Tlačítko (GPIO13 proti GND): krátký stisk = další profil, podržení 5 s = restart ESP
 #pragma once
 #include <Arduino.h>
 
 namespace button {
 
-enum class Event { None, Short, Long, Exit };  // Long = 2 s, Exit = 5 s (při stejném stisku po Long)
+enum class Event { None, Short, Long };  // Long = podržení BTN_LONG_MS (hlásí se hned při dosažení)
 
 void begin();
 Event poll();        // volat často z loop

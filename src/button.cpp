@@ -9,7 +9,6 @@ static bool state = false;
 static uint32_t rawChangeMs = 0;
 static uint32_t pressMs = 0;
 static bool longFired = false;
-static bool exitFired = false;
 static bool ignoreUntilRelease = false;
 
 void begin() {
@@ -32,7 +31,6 @@ Event poll() {
     if (state) {
       pressMs = now;
       longFired = false;
-      exitFired = false;
     } else {
       if (!ignoreUntilRelease && !longFired) ev = Event::Short;
       ignoreUntilRelease = false;
@@ -41,9 +39,6 @@ Event poll() {
   if (state && !ignoreUntilRelease && !longFired && now - pressMs >= BTN_LONG_MS) {
     longFired = true;
     ev = Event::Long;
-  } else if (state && !ignoreUntilRelease && longFired && !exitFired && now - pressMs >= BTN_EXIT_MS) {
-    exitFired = true;
-    ev = Event::Exit;
   }
   return ev;
 }

@@ -14,6 +14,9 @@ static Pvt pvtData;
 static SatSummary satData;
 static Dop dopData;
 static Cov covData;
+static SigSummary sigData;
+static uint32_t sigCnt = 0;
+static int8_t corrCfgRes = -1;
 static void (*pvtCb)() = nullptr;
 static void (*satCb)() = nullptr;
 static Info infoData;
@@ -91,6 +94,16 @@ static void (*rawFrameCb)(const uint8_t *, uint16_t) = nullptr;
 static uint32_t mgaAcc = 0, mgaRej = 0, mgaDbdCnt = 0;
 static int8_t ackAidingRes = -1;
 void onRawFrame(void (*cb)(const uint8_t *, uint16_t)) { rawFrameCb = cb; }
+static void (*navFrameCb)(const uint8_t *, uint16_t) = nullptr;
+void onNavFrame(void (*cb)(const uint8_t *, uint16_t)) { navFrameCb = cb; }
+
+// Celý rámec NAV-PVT / COV / HPPOSLLH dál (jen když ho main chce – záznam v aplikaci)
+static void navFrame(uint8_t cls, uint8_t id, const uint8_t *p, uint16_t len) {
+  if (!navFrameCb || len + 8 > 160) return;
+  uint8_t fr[160];
+  uint16_t n = ubx::frame(cls, id, p, len, fr);
+  navFrameCb(fr, n);
+}
 
 static void handleUbx(uint8_t cls, uint8_t id, const uint8_t *p, uint16_t len) {
   lastUbxMs = millis();
@@ -115,6 +128,8 @@ static void handleUbx(uint8_t cls, uint8_t id, const uint8_t *p, uint16_t len) {
     rawFrameCb(fm, n);
     return;
   }
+  if (cls == ubx::CLS_NAV && (id == ubx::ID_NAV_PVT || id == ubx::ID_NAV_COV || id == ubx::ID_NAV_HPPOSLLH))
+    navFrame(cls, id, p, len);
   if (cls == ubx::CLS_NAV && id == ubx::ID_NAV_HPPOSLLH && len >= 36) {
     if (p[3] & 0x01) return;  // invalidLlh
     hpData.iTOW = ubx::rdU4(p + 4);
@@ -192,6 +207,33 @@ static void handleUbx(uint8_t cls, uint8_t id, const uint8_t *p, uint16_t len) {
     covData.sE = ee > 0 ? sqrtf(ee) : 0;
     covData.sD = dd > 0 ? sqrtf(dd) : 0;
     covData.rxMs = millis();
+  } else if (cls == ubx::CLS_NAV && id == ubx::ID_NAV_SIG && len >= 8) {
+    // blok 16 B: gnssId, svId, sigId, freqId, prRes, cno, qualityInd, corrSource, ionoModel, sigFlags (X2), rez.
+    SigSummary g;
+    uint8_t n = p[5];
+    for (uint8_t i = 0; i < n; i++) {
+      uint16_t o = 8 + i * 16;
+      if (o + 16 > len) break;
+      g.n++;
+      uint8_t src = p[o + 8];
+      uint16_t fl = ubx::rdU2(p + o + 10);
+      if (fl & 0x0008) g.used++;                 // prUsed
+      if (fl & 0x00C0) {                         // prCorrUsed | crCorrUsed
+        g.corrUsed++;
+        if (src < 16) g.bySrc[src]++;
+      }
+    }
+    uint8_t best = 0;
+    for (int k = 1; k < 16; k++) {
+      if (g.bySrc[k] > best) {
+        best = g.bySrc[k];
+        g.dominant = k;
+      }
+    }
+    g.valid = true;
+    g.rxMs = millis();
+    sigData = g;
+    sigCnt++;
   } else if (cls == ubx::CLS_NAV && id == ubx::ID_NAV_SAT && len >= 8) {
     static SatSummary s;  // statická – obsahuje seznam satelitů (velká na zásobník)
     s = SatSummary();
@@ -310,12 +352,18 @@ bool detect() {
 static uint16_t measRateMs = GNSS_MEAS_RATE_MS;
 static uint8_t dynModel = GNSS_DYNMODEL;
 static int8_t minElev = 10;
+static bool corrSbas = true, corrHas = true;
 static bool mStatic = false;   // měření bodu: statický model
 static bool mRaw = false;      // měření bodu: RAWX/SFRBX
 static constexpr uint8_t DYN_STATIONARY = 2;
 
 static uint8_t effDyn() { return mStatic ? DYN_STATIONARY : dynModel; }
 static uint8_t rawxRate() { return mRaw ? (uint8_t)(1000 / measRateMs) : 0; }  // 1× za sekundu
+
+void setCorr(bool sbas, bool has) {
+  corrSbas = sbas;
+  corrHas = has;
+}
 
 void setParams(uint16_t rateMs, uint8_t dyn, int8_t elev) {
   measRateMs = rateMs;
@@ -341,6 +389,7 @@ bool configure(bool verbose) {
       {ubx::KEY_MSGOUT_NAV_COV_UART1, 1, 1, "MSGOUT-NAV_COV_UART1"},
       {ubx::KEY_MSGOUT_NAV_HPPOSLLH_UART1, 1, 1, "MSGOUT-NAV_HPPOSLLH_UART1"},
       {ubx::KEY_MSGOUT_NAV_EOE_UART1, 1, 1, "MSGOUT-NAV_EOE_UART1"},
+      {ubx::KEY_MSGOUT_NAV_SIG_UART1, 1, (uint32_t)(1000 / measRateMs), "MSGOUT-NAV_SIG_UART1"},
       {ubx::KEY_RATE_MEAS, 2, measRateMs, "RATE-MEAS"},
       {ubx::KEY_RATE_NAV, 2, 1, "RATE-NAV"},
       {ubx::KEY_NAVSPG_DYNMODEL, 1, effDyn(), "NAVSPG-DYNMODEL"},
@@ -360,6 +409,17 @@ bool configure(bool verbose) {
     a.addL(ubx::KEY_NAVSPG_ACKAIDING, true);
     ackAidingRes = sendValSet(a, 500);
     if (verbose) Serial.printf("  NAVSPG-ACKAIDING: %s\n", ackAidingRes == 1 ? "OK" : ackAidingRes == 0 ? "NAK" : "bez odpovědi");
+  }
+  // Korekce zvlášť (klíče CFG-NAVCOR jsou jen v HPG 2.1x): SBAS, HAS, korekce od hostitele (RTCM) vždy zap.
+  {
+    ubx::ValSet c(ubx::LAYER_RAM);
+    c.addL(ubx::KEY_SBAS_USE_DIFFCORR, corrSbas);
+    c.addL(ubx::KEY_NAVCOR_ENABLE_HOST, true);
+    c.addL(ubx::KEY_NAVCOR_ENABLE_GAL_HAS, corrHas);
+    corrCfgRes = sendValSet(c, 500);
+    if (verbose)
+      Serial.printf("  korekce SBAS %s, HAS %s, RTCM zap: %s\n", corrSbas ? "zap" : "vyp", corrHas ? "zap" : "vyp",
+                    corrCfgRes == 1 ? "OK" : corrCfgRes == 0 ? "NAK" : "bez odpovědi");
   }
 
   ubx::ValSet all(ubx::LAYER_RAM);
@@ -513,6 +573,7 @@ const Pvt &pvt() { return pvtData; }
 const SatSummary &sats() { return satData; }
 const Dop &dop() { return dopData; }
 const Cov &cov() { return covData; }
+const SigSummary &sig() { return sigData; }
 const Info &info() { return infoData; }
 
 Stats stats() {
@@ -532,6 +593,8 @@ Stats stats() {
   s.mgaRejected = mgaRej;
   s.mgaDbd = mgaDbdCnt;
   s.ackAiding = ackAidingRes;
+  s.corrCfg = corrCfgRes;
+  s.sigCount = sigCnt;
   s.reinits = initCalls > 1 ? initCalls - 1 : 0;
   s.eoeCount = eoeCnt;
   s.hpCount = hpCnt;

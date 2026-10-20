@@ -81,8 +81,8 @@ static bool ubxFeed(uint8_t c) {
   return true;
 }
 
-// Řádek příkazu JSON z mobilu
-static char cmdBuf[512];
+// Řádek příkazu JSON z mobilu (set profiles s 10 profily má ~2,5 kB)
+static char cmdBuf[4096];
 static size_t cmdLen = 0;
 static bool cmdOverflow = false;
 static CmdHandler cmdHandler = nullptr;
@@ -160,8 +160,7 @@ bool begin(const char *customName) {
   });
   // Potvrzení odeslaných dat (WRITE_EVT) – kolik bajtů ještě čeká v zásobníku BT
   bt.register_callback(sppEvent);
-  // Jen BT Classic: paměť řadiče pro BLE se uvolní (jinak se vedle BT nevejde Wi-Fi AP).
-  // BLE pak do restartu nejde zapnout.
+  // Jen BT Classic: paměť řadiče pro BLE se uvolní. BLE pak do restartu nejde zapnout.
   started = bt.begin(btName, false, true);
   return started;
 }

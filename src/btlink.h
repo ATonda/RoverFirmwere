@@ -32,10 +32,10 @@ uint32_t backlog();                 // odeslaná, ale zásobníkem BT dosud nepo
 enum class Event { None, Connected, Disconnected, PairOk, PairFail };
 Event takeEvent();
 
-// Výchozí jméno ROVER-xxxx (z MAC) – stejné používá i Wi-Fi AP
+// Výchozí jméno ROVER-xxxx (z MAC)
 const char *defaultName();
 bool begin(const char *customName); // spustí SPP (jen BT Classic, paměť BLE uvolněna); prázdné jméno = výchozí
-void end();                         // vypne BT (záloha, když se vedle BT nevejde Wi-Fi AP)
+void end();                         // vypne BT
 bool active();
 const char *name();
 void poll();                        // příjem z mobilu -> X20
