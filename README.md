@@ -7,3 +7,7 @@ Firmware roveru ZED-X20P + ESP32 (DFRobot FireBeetle 2 ESP32-E, 4 MB flash), Pla
 - Zapojení: [docs/rover-zapojeni-stav.md](docs/rover-zapojeni-stav.md)
 
 Nahrání jen přes USB (bez OTA a bez Wi-Fi od 0.13.0). Konzole 115200 Bd, `h` = nápověda, řádek začínající `{` = příkaz JSON jako z aplikace.
+
+## Licence
+
+GPL-3.0 – viz [LICENSE](LICENSE).
