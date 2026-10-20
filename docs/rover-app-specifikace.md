@@ -274,3 +274,8 @@ Cíl: kratší studený start X20 po delším vypnutí bez účtu a bez internet
 - Test „Celý den (lehký)“: bez surového proudu, každá 5. epocha, ruční značky skutečného stavu (Měřím, Manipulace, Chodím, Jedu) a automatické značky „rover: …“ při změně stavu; `motion.csv` (1 Hz: stav, model, znaky) v ZIPu. „Celý den (plný)“ se surovou IMU.
 - Osy IMU v `test.json` opraveny podle testu 6 poloh (X doprava, Z dovnitř, rameno −17,5 / −16 / +45 mm).
 - Zdroj korekcí 12 = HAS. Název ZIPu se scénářem (`RG_TEST_20261020_161249_Les.zip`).
+
+## 13. Požadavky na další verzi (20. 10.)
+
+- Automatické připojení k naposledy připojenému roveru po startu aplikace (bez výběru v Nastavení).
+- Sekce v Nastavení (Rover, Nastavení roveru, Korekce NTRIP, Uživatelský profil, …) sbalené; v záhlaví jen stav, např. „Korekce NTRIP – zapnuto, VESOG, RTCM 2 s“, „Rover – připojeno, ROVER_Tonda, 0.14.0“. Rozbalení klepnutím.

@@ -18,11 +18,15 @@ static constexpr float SHARP_DEV = 0.3f;        //             nebo náraz > 0,3
 static constexpr float V_STOP = 0.2f;           // [m/s] stání
 static constexpr float V_HANDLE = 0.3f;         // [m/s] manipulace = na místě (pod touto rychlostí)
 static constexpr float V_WALK_MIN = 0.4f;       // [m/s] pohyb chůzí podle GNSS (i bez zřetelných kroků v ruce)
+static constexpr float WALK_STD_MIN = 0.06f;    // [g] chůze podle rychlosti jen s otřesy krabičky v ruce (auto 20–45 mg)
+static constexpr float V_CAR = 2.0f;            // [m/s] jízda: nad touto rychlostí hladký průběh bez kroků
+static constexpr float CAR_STD_MAX = 0.06f;     // [g]   rozptyl |a| pod 60 mg
 static constexpr float V_WALK = 3.0f;           // [m/s] nad = ne chůze
 static constexpr float V_DRIVE = 6.0f;          // [m/s] jistě jízda
 static constexpr int N_MEASURE = 20;            // 10 s klidu -> Měřím
 static constexpr int N_DRIVE_FAST = 10;         // 5 s nad 6 m/s -> Jedu
 static constexpr int N_DRIVE_MED = 20;          // 10 s nad 3 m/s bez kroků -> Jedu
+static constexpr int N_DRIVE_SMOOTH = 6;        // 3 s nad 2 m/s, hladce, bez kroků -> Jedu (rozjezd)
 static constexpr int N_WALK_FROM_DRIVE = 20;    // 10 s kroků -> z jízdy Chodím
 static constexpr int N_WALK = 6;                // 3 s kroků -> Chodím
 static constexpr int N_HANDLE = 2;              // 1 s prudkých pohybů na místě -> Manipulace (ze stání, z jízdy)
@@ -36,7 +40,7 @@ static Features f;
 static State cur = HANDLE;
 static State lastMoving = HANDLE;    // poslední stav s pohybem (rozjezd po stání v autě)
 static uint32_t measureSince = 0;
-static int nStill = 0, nSteps = 0, nSharpSlow = 0, nWalkV = 0, nFast = 0, nMed = 0;
+static int nStill = 0, nSteps = 0, nSharpSlow = 0, nWalkV = 0, nFast = 0, nMed = 0, nSmooth = 0;
 static bool autoMode = false;
 static uint8_t sentModel = 0xFF;
 static uint32_t sentMs = 0;
@@ -116,7 +120,8 @@ static void evaluate() {
   nStill = f.still ? nStill + 1 : 0;
   nSteps = f.steps ? nSteps + 1 : 0;
   nSharpSlow = (f.sharp && v < V_HANDLE) ? nSharpSlow + 1 : 0;  // i bez fixu (v = -1)
-  nWalkV = (v > V_WALK_MIN && v <= V_WALK) ? nWalkV + 1 : 0;
+  nWalkV = (v > V_WALK_MIN && v <= V_WALK && f.accStd > WALK_STD_MIN) ? nWalkV + 1 : 0;
+  nSmooth = (v > V_CAR && f.accStd < CAR_STD_MAX && !f.steps) ? nSmooth + 1 : 0;
   nFast = v > V_DRIVE ? nFast + 1 : 0;
   nMed = (v > V_WALK && !f.steps) ? nMed + 1 : 0;
 
@@ -130,7 +135,7 @@ static void evaluate() {
     return;
   }
   if (nStill >= N_MEASURE && v < V_STOP) setState(MEASURE);
-  else if (cur != DRIVE && (nFast >= N_DRIVE_FAST || nMed >= N_DRIVE_MED)) setState(DRIVE);
+  else if (cur != DRIVE && (nFast >= N_DRIVE_FAST || nMed >= N_DRIVE_MED || nSmooth >= N_DRIVE_SMOOTH)) setState(DRIVE);
   else if (cur == DRIVE && nSteps >= N_WALK_FROM_DRIVE && v < V_WALK) setState(WALK);
   else if (cur == HANDLE && (nSteps >= N_WALK || nWalkV >= N_WALK) && v < V_WALK) setState(WALK);
   else if (cur == WALK && nSharpSlow >= N_HANDLE_WALK) setState(HANDLE);

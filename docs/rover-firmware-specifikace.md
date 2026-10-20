@@ -413,3 +413,7 @@ Hlavní použití: měření za chůze (mapování), statické geodetické měř
 - Simulace na záznamech 20. 10. (60 Hz): auto 809 s Jedu od rozjezdu, 6 poloh přesně klid/manipulace, les: chůze, zastávka 110 s jako Měřím (start 10 s po zastavení), 2 krátké Manipulace při pomalé chůzi.
 - Profil s modelem „automaticky“: Měřím = stationary (2), Manipulace a Chodím = pedestrian (3), Jedu = automotive (4); CFG-NAVSPG-DYNMODEL jen RAM, nejvýš 1× za 2 s; měření bodu z aplikace (statický model) má přednost. Výchozí profily nově: Automaticky 5 Hz (výchozí), Chodec 5 Hz, Auto 5 Hz, Statika 1 Hz (jen po naformátování LittleFS).
 - STA navíc: stav, automaticky, model X20, σ|a| [mg], odchylka [mg], ω max, kroky ×100, kroky Hz, rychlost, počet změn. `get info` caps `motion`. Konzole: řádek `[pohyb] … -> …` při změně, v živém výpisu stav a znaky.
+
+**Test 20. 10. večer „Celý den (plný)“ (FW 0.14.0, 35 min):** byt → auto → město → dům a schody → auto → město → domů. Na palubní desce Měřím / stationary, jízda Jedu / automotive i při stání na křižovatkách, schody jako Chodím. Chyba: pomalý rozjezd auta 41 a 50 s jako Chodím (rychlost 0,8–1,5 m/s, σ|a| 21–27 mg) kvůli pravidlu chůze podle rychlosti. Simulace (60 Hz) se shoduje s roverem do 2 s.
+
+**Verze 0.14.1 – přeloženo (20. 10.):** chůze podle rychlosti (0,4–3 m/s) jen při σ|a| > 60 mg (krabička v ruce 110–150 mg, auto 20–45 mg); nové pravidlo Jedu: 3 s nad 2 m/s, σ|a| < 60 mg, bez kroků. Simulace: Jedu o 10–17 s dřív bez falešné chůze, les beze změny.
