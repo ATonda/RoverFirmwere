@@ -112,7 +112,7 @@ Konfigurace ve složeném přístroji: příkaz `b` (průchozí režim) a u-cent
 - COM28 smí mít otevřený jen jeden program (VS Code monitor / Arduino IDE / u-center).
 - **Studený start X20 uvnitř vypadá jako vadná anténa:** 0 satelitů, PPS 0, nesvítí/nebliká zelená LED na desce X20, UBX-MON-RF bez rozdílu (AGC ~25 %, antStatus UNKNOWN – dohled antény není zapojený). Napětí pro anténu na SMA 3,2 V = v pořádku. Řešení: anténa ven/k oknu, počkat na fix (pak už startuje rychle).
 - **Bez baterie** ukazuje měření baterie nesmysl (~6 V) – výstup BAT nabíjecího modulu bez článku nedrží napětí.
-- **GPIO35 (uzel děliče) – obdélník ~100 kHz, 0 ↔ 2,9 V** (osciloskop, 14. 10.), i bez USB. Zapojení děliče i kondenzátoru 100 nF ověřeno opakovaně. Firmware od 0.14.5 vzorkuje v náhodných intervalech a průměruje (10 s / 5 min).
+- **GPIO35 – obdélník ~100 kHz, 0 ↔ 2,9 V** (osciloskop, 14. 10.): příčina nalezena 20. 10. – kondenzátor 100 nF byl připájený mezi GPIO35 a sousední SCL místo GND (signál I2C přes kondenzátor na vstup ADC, zároveň zátěž sběrnice I2C). Po opravě vzorky na pinu 2067–2108 mV (rozptyl ~40 mV). Firmware od 0.14.5 vzorkuje v náhodných intervalech a průměruje (10 s / 5 min).
 - Páry vodičů od ESP (vlastní číslování): 1 bílá/šedá = 13 + GND (tlačítko Wi-Fi), 2 černá/hnědá = 26/D3 + VCC (WS2812), 6 fialová/modrá = 0/D5 + GND (BOOT), 7 oranžová/žlutá = 25/D2 + GND (piezo).
 - Testy hardwaru v konzoli (FW 0.3.3): `t1` tlačítka, `t2` piezo, `t3` LED, `t4` souhrn.
 - Panelová USB-C zásuvka: CC odpory 5,1 kΩ jsou v zásuvce (žlutý/modrý vodič nezapojovat). Zapojení: červený → 6092 VIN, černý → G, zelený → D+, bílý → D−. Při „neznámém zařízení“ zkusit otočit konektor, zkontrolovat spoje D+/D−.
