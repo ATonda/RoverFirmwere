@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 #define FW_NAME    "Rover"
-#define FW_VERSION "0.14.4"
+#define FW_VERSION "0.14.5"
 
 // ---------------------------------------------------------------- piny
 // X20 UART1 (ELT0421: TX/SPI_MISO, RX/SPI_MOSI)

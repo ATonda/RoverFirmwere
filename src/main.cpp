@@ -403,7 +403,7 @@ static void testSummary() {
   uint32_t mv = power::pinMillivolts();
   uint32_t mvMin, mvMax;
   power::lastSpread(mvMin, mvMax);
-  Serial.printf("Baterie: pin 35 %lu mV (průměr 1 s, vzorky %lu–%lu) × %.4f = %.3f V, vyhlazeně %.3f V (%d %%)%s\n",
+  Serial.printf("Baterie: pin 35 %lu mV (průměr 10 s, vzorky %lu–%lu) × %.4f = %.3f V, vyhlazeně %.3f V (%d %%)%s\n",
                 (unsigned long)mv, (unsigned long)mvMin, (unsigned long)mvMax, power::dividerFactor(),
                 mv * power::dividerFactor() / 1000.0f, power::batteryVolts(), power::batteryPercentStable(),
                 mv > 2300 ? " – nad 4,6 V: baterie odpojená nebo vadný dělič"
