@@ -24,9 +24,11 @@ static constexpr float CAR_STD_MAX = 0.06f;     // [g]   rozptyl |a| pod 60 mg
 static constexpr float V_WALK = 3.0f;           // [m/s] nad = ne chůze
 static constexpr float V_DRIVE = 6.0f;          // [m/s] jistě jízda
 static constexpr int N_MEASURE = 20;            // 10 s klidu -> Měřím
-static constexpr float EXIT_GYRO = 20.0f;       // z Měřím hned: |ω| > 20 °/s (zvednutí 35–440 °/s; klepnutí do stolu 5–11 °/s)
-static constexpr float EXIT_STD = 0.02f;        //               nebo σ|a| > 20 mg
-static constexpr int N_EXIT = 3;                // jinak až po 1,5 s trvalého neklidu (klepnutí, dveře auta, vítr se ignorují)
+// Odchod z Měřím podle trvání (vzorky 120 Hz): úder je krátký, zvednutí a trvalý pohyb dlouhé
+static constexpr float EXIT_GYRO = 20.0f;       // zvednutí: |ω| > 20 °/s ...
+static constexpr int EXIT_GYRO_N = 24;          //           ... souvisle aspoň 0,2 s -> hned
+static constexpr int UNREST_WIN = 180;          // jinak: okno 1,5 s
+static constexpr int UNREST_N = 60;             //        nad mezí klidu (|ω| > 3 °/s nebo ||a| − 1 g| > 0,05 g) celkem > 0,5 s
 static constexpr int N_DRIVE_FAST = 10;         // 5 s nad 6 m/s -> Jedu
 static constexpr int N_DRIVE_MED = 20;          // 10 s nad 3 m/s bez kroků -> Jedu
 static constexpr int N_DRIVE_SMOOTH = 6;        // 3 s nad 2 m/s, hladce, bez kroků -> Jedu (rozjezd)
@@ -43,7 +45,10 @@ static Features f;
 static State cur = HANDLE;
 static State lastMoving = HANDLE;    // poslední stav s pohybem (rozjezd po stání v autě)
 static uint32_t measureSince = 0;
-static int nUnrest = 0, nStill = 0, nSteps = 0, nSharpSlow = 0, nWalkV = 0, nFast = 0, nMed = 0, nSmooth = 0;
+static uint8_t overBuf[UNREST_WIN];  // vzorek nad mezí klidu (1/0)
+static int overHead = 0, overSum = 0, gyroRun = 0;
+static bool exitHit = false;         // v Měřím splněna podmínka odchodu
+static int nStill = 0, nSteps = 0, nSharpSlow = 0, nWalkV = 0, nFast = 0, nMed = 0, nSmooth = 0;
 static bool autoMode = false;
 static uint8_t sentModel = 0xFF;
 static uint32_t sentMs = 0;
@@ -53,8 +58,17 @@ static bool evalPending = false;
 void onImu(const imu::Sample &s) {
   bufA[head] = sqrtf(s.ax * s.ax + s.ay * s.ay + s.az * s.az);
   bufG[head] = sqrtf(s.gx * s.gx + s.gy * s.gy + s.gz * s.gz);
+  uint8_t over = (bufG[head] > STILL_GYRO || fabsf(bufA[head] - 1.0f) > STILL_DEV) ? 1 : 0;
+  overSum += over - overBuf[overHead];
+  overBuf[overHead] = over;
+  overHead = (overHead + 1) % UNREST_WIN;
+  gyroRun = bufG[head] > EXIT_GYRO ? gyroRun + 1 : 0;
   head = (head + 1) % WIN;
   if (filled < WIN) filled++;
+  if (cur == MEASURE && !exitHit && (gyroRun >= EXIT_GYRO_N || overSum > UNREST_N)) {
+    exitHit = true;
+    evalPending = true;  // odchod hned, ne až po 0,5 s
+  }
   if (++sinceEval >= STEP) {
     sinceEval = 0;
     if (filled == WIN) evalPending = true;
@@ -103,37 +117,28 @@ static void computeFeatures() {
   f.steps = best > STEP_SCORE && f.accStd > STEP_STD_MIN && f.accStd < STEP_STD_MAX;
   f.stepHz = f.steps && bestLag ? 120.0f / bestLag : 0;
   f.still = gmax < STILL_GYRO && dev < STILL_DEV && f.accStd < STILL_STD;
-  // posledních 0,5 s (STEP vzorků): klid pro trvání neklidu ve stavu Měřím
-  float rg = 0, rd = 0, rm = 0, rv = 0;
-  for (int i = WIN - STEP; i < WIN; i++) rm += x[i];
-  rm /= STEP;
-  for (int i = WIN - STEP; i < WIN; i++) {
-    int k = (head + i) % WIN;
-    if (bufG[k] > rg) rg = bufG[k];
-    float d = fabsf(bufA[k] - 1.0f);
-    if (d > rd) rd = d;
-    rv += (x[i] - rm) * (x[i] - rm);
-  }
-  f.quiet = rg < STILL_GYRO && rd < STILL_DEV && sqrtf(rv / STEP) < STILL_STD;
+  f.unrest = overSum / 120.0f;
   f.sharp = !f.steps && (gmax > SHARP_GYRO || dev > SHARP_DEV);
 }
 
 static void setState(State s) {
   if (s == cur) return;
   State old = cur;
-  if (s == MEASURE) measureSince = millis();
+  if (s == MEASURE) {
+    measureSince = millis();
+    exitHit = false;
+  }
   if (old != MEASURE) lastMoving = old;
   cur = s;
   nChanges++;
-  Serial.printf("[pohyb] %s -> %s (v %.1f m/s, |a| σ %.0f mg, ω max %.0f °/s, kroky %.2f)\n", stateName(old),
-                stateName(s), f.speed, f.accStd * 1000, f.gyroMax, f.stepScore);
+  Serial.printf("[pohyb] %s -> %s (v %.1f m/s, |a| σ %.0f mg, ω max %.0f °/s, kroky %.2f, neklid %.2f s)\n",
+                stateName(old), stateName(s), f.speed, f.accStd * 1000, f.gyroMax, f.stepScore, f.unrest);
 }
 
 static void evaluate() {
   computeFeatures();
   float v = f.speed;  // -1 = bez fixu
   nStill = f.still ? nStill + 1 : 0;
-  nUnrest = f.quiet ? 0 : nUnrest + 1;  // po sobě jdoucí neklidné půlsekundy
   nSteps = f.steps ? nSteps + 1 : 0;
   nSharpSlow = (f.sharp && v < V_HANDLE) ? nSharpSlow + 1 : 0;  // i bez fixu (v = -1)
   nWalkV = (v > V_WALK_MIN && v <= V_WALK && f.accStd > WALK_STD_MIN) ? nWalkV + 1 : 0;
@@ -142,8 +147,8 @@ static void evaluate() {
   nMed = (v > V_WALK && !f.steps) ? nMed + 1 : 0;
 
   if (cur == MEASURE) {
-    // krátký otřes (klepnutí, dveře, vítr) Měřím nepřeruší; zvednutí nebo trvalý pohyb ano
-    if (f.gyroMax <= EXIT_GYRO && f.accStd <= EXIT_STD && nUnrest < N_EXIT) return;
+    // úder, klepnutí, dveře, vítr Měřím nepřeruší; zvednutí (ω > 20 °/s ≥ 0,2 s) nebo neklid > 0,5 s z 1,5 s ano
+    if (!exitHit) return;
     if (f.steps) setState(WALK);
     else if (f.sharp) setState(HANDLE);
     else if (v > V_WALK || (lastMoving == DRIVE && millis() - measureSince < DRIVE_RESUME_MS)) setState(DRIVE);

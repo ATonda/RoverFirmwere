@@ -21,7 +21,7 @@ struct Features {
   float stepHz = 0;     // frekvence kroků [Hz] (0 = bez kroků)
   float speed = 0;      // rychlost GNSS [m/s] (-1 = bez fixu)
   bool still = false;   // klid v tomto okně (2 s)
-  bool quiet = false;   // klid v posledních 0,5 s (krátký otřes zmizí po 0,5 s, z okna 2 s až po 2 s)
+  float unrest = 0;     // doba nad mezí klidu za posledních 1,5 s [s] (odchod z Měřím nad 0,5 s)
   bool steps = false;   // kroky v tomto okně
   bool sharp = false;   // prudký pohyb bez kroků
 };
