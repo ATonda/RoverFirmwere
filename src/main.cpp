@@ -148,14 +148,14 @@ static void printStatus() {
                 (unsigned long)bs.pairFail, btTx,
                 (unsigned long)bs.txDropped, btRx, (unsigned long)bs.rtcmOk, (unsigned long)bs.rtcmBad);
   if (bs.rtcmOk) Serial.printf(" posl. %u před %.1f s", bs.rtcmLastType, (millis() - bs.rtcmLastMs) / 1000.0f);
-  const motion::Features &mf = motion::features();
-  Serial.printf("     stav %s%s, model X20 %u | |a| σ %.0f mg, odchylka %.2f g, ω max %.0f °/s, kroky %.2f (%.1f Hz), v %.1f m/s\n",
-                motion::stateName(motion::state()), motion::autoOn() ? " (automaticky)" : "", gnss::dynEffective(),
-                mf.accStd * 1000, mf.accDev, mf.gyroMax, mf.stepScore, mf.stepHz, mf.speed);
   const gnss::SigSummary &sg = gnss::sig();
   Serial.printf(" | GGA kval. %d kor. %s (zdroj %d, sig. %u/%u) | HDOP %.2f σN %.2f σE %.2f σD %.2f m%s\n",
                 nmea::ggaQuality(), p.corrAge ? "ano" : "-", sg.dominant, sg.corrUsed, sg.n, dp.hDOP, cv.sN, cv.sE,
                 cv.sD, cv.valid ? "" : " (kov. neplatná)");
+  const motion::Features &mf = motion::features();
+  Serial.printf("     stav %s%s, model X20 %u | |a| σ %.0f mg, odchylka %.2f g, ω max %.0f °/s, kroky %.2f (%.1f Hz), v %.1f m/s\n",
+                motion::stateName(motion::state()), motion::autoOn() ? " (automaticky)" : "", gnss::dynEffective(),
+                mf.accStd * 1000, mf.accDev, mf.gyroMax, mf.stepScore, mf.stepHz, mf.speed);
 }
 
 static void printImuSamples() {
