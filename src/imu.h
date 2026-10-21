@@ -38,4 +38,23 @@ Stats stats();
 bool calibrateGyro(uint32_t durationMs, void (*idle)() = nullptr);
 void gyroBias(float &bx, float &by, float &bz);
 
+// Kalibrace gyra na pozadí (příkaz z aplikace): průměr surového gyra za durationMs, smyčka běží dál.
+// Výsledek se zjistí přes calResult() – vrací true jednou po dokončení (ok = bias změněn a uložen).
+void startCalibration(uint32_t durationMs);
+bool calRunning();
+bool calResult(bool &ok);
+
+// Průběžná kalibrace v klidu (FW 0.15.0): okno 1 s je klid, když σ|a| < 5 mg a max |ω| < 1,5 °/s.
+// Po 30 s nepřerušeného klidu se bias nastaví na průměr surového gyra za těchto 30 s (pak každých dalších 30 s).
+// Do NVS se uloží nejvýš 1× za 10 min a jen při změně > 0,002 °/s.
+struct BiasInfo {
+  float bx = 0, by = 0, bz = 0;  // aktuální bias [°/s]
+  float tempC = 0;               // teplota IMU při poslední změně biasu
+  uint32_t updates = 0;          // počet průběžných aktualizací od startu
+  uint32_t stillSec = 0;         // délka nepřerušeného klidu [s]
+  bool still = false;            // poslední okno 1 s je klid
+};
+BiasInfo biasInfo();
+float temperature();           // poslední teplota IMU [°C]
+
 }  // namespace imu

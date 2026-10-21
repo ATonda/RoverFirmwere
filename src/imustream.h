@@ -3,15 +3,16 @@
 // Rámec UBX třídy 0xF5 (vlastní), ID 0x01, každých 0,5 s (30 vzorků 60 Hz – každý druhý ze 120 Hz).
 // Aplikace ho neinterpretuje, ukládá se se surovým proudem trasy (track_N.log).
 // Obsah (little endian):
-//   u8  verze = 1
+//   u8  verze = 2 (FW 0.15.0; verze 1 = bez teploty, hlavička 44 B)
 //   u8  n – počet vzorků
 //   u8  decimace (2 = každý druhý vzorek IMU)
-//   u8  příznaky: bit0 čas GNSS platný, bit1 PPS
+//   u8  příznaky: bit0 čas GNSS platný, bit1 PPS, bit2 klid (okno 1 s: σ|a| < 5 mg, |ω| < 1,5 °/s)
 //   i64 t0Us – esp_timer prvního vzorku [µs]
 //   u32 pvtITOW – čas týdne GPS poslední epochy [ms]
 //   i64 pvtRxUs – esp_timer příjmu této NAV-PVT [µs]
 //   i64 ppsUs – esp_timer poslední hrany PPS [µs]
-//   f32 ×3 bias gyra odečtený ve vzorcích [°/s]
+//   f32 ×3 bias gyra odečtený ve vzorcích [°/s] (mění se průběžnou kalibrací v klidu)
+//   f32 teplota IMU [°C]
 //   n × { u16 dt [100 µs od t0], i16 ax, ay, az [mg], i16 gx, gy, gz [0,02 °/s] }
 #pragma once
 #include <Arduino.h>

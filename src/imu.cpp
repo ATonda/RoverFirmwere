@@ -43,6 +43,33 @@ static float biasX = 0, biasY = 0, biasZ = 0;
 static float tempC = 25;
 static uint32_t tempReadMs = 0;
 
+// průběžná kalibrace v klidu (okna 1 s = 120 vzorků)
+static constexpr int STILL_WIN = 120;
+static constexpr float STILL_ACC_STD = 0.005f;   // [g]
+static constexpr float STILL_GYRO_MAX = 1.5f;    // [°/s]
+static constexpr uint32_t STILL_UPDATE_SEC = 30; // klid potřebný pro aktualizaci
+static constexpr float SAVE_MIN_DIFF = 0.002f;   // [°/s]
+static constexpr uint32_t SAVE_MIN_MS = 600000;  // 10 min
+static double wSumG[3] = {0, 0, 0};              // surové gyro v okně
+static double wSumA = 0, wSumA2 = 0;
+static float wMaxG = 0;
+static int wN = 0;
+static double rSumG[3] = {0, 0, 0};              // surové gyro v nepřerušeném klidu
+static uint32_t rN = 0, rSec = 0;
+static bool winStill = false;
+static uint32_t biasUpdates = 0;
+static float biasTemp = 0;
+static float savedX = 0, savedY = 0, savedZ = 0;
+static uint32_t savedMs = 0;
+static bool savedOnce = false;
+// kalibrace na pozadí
+static bool bgCal = false;
+static uint32_t bgCalMs = 0, bgCalDur = 0;
+static double bgSum[3] = {0, 0, 0}, bgSq[3] = {0, 0, 0};
+static uint32_t bgN = 0;
+static bool bgDone = false, bgOk = false;
+static bool blockingCal = false;
+
 // fronta vzorků pro spotřebitele (EKF)
 static constexpr int QSIZE = 64;
 static Sample queue[QSIZE];
@@ -86,7 +113,97 @@ static void loadBias() {
   biasX = p.getFloat("gbx", 0);
   biasY = p.getFloat("gby", 0);
   biasZ = p.getFloat("gbz", 0);
+  biasTemp = p.getFloat("gbt", 0);
   p.end();
+  savedX = biasX;
+  savedY = biasY;
+  savedZ = biasZ;
+}
+
+static void saveBias() {
+  Preferences p;
+  p.begin("imu", false);
+  p.putFloat("gbx", biasX);
+  p.putFloat("gby", biasY);
+  p.putFloat("gbz", biasZ);
+  p.putFloat("gbt", biasTemp);
+  p.end();
+  savedX = biasX;
+  savedY = biasY;
+  savedZ = biasZ;
+  savedMs = millis();
+  savedOnce = true;
+}
+
+// Klid a průběžná kalibrace – volá se pro každý vzorek se surovým gyrem [°/s]
+static void stillTrack(float rx, float ry, float rz, float ax, float ay, float az) {
+  float a = sqrtf(ax * ax + ay * ay + az * az);
+  float gx = rx - biasX, gy = ry - biasY, gz = rz - biasZ;
+  float g = sqrtf(gx * gx + gy * gy + gz * gz);
+  wSumG[0] += rx;
+  wSumG[1] += ry;
+  wSumG[2] += rz;
+  wSumA += a;
+  wSumA2 += (double)a * a;
+  if (g > wMaxG) wMaxG = g;
+  if (++wN < STILL_WIN) return;
+  double m = wSumA / wN;
+  double var = wSumA2 / wN - m * m;
+  winStill = var < (double)STILL_ACC_STD * STILL_ACC_STD && wMaxG < STILL_GYRO_MAX;
+  if (winStill && !blockingCal && !bgCal) {
+    for (int i = 0; i < 3; i++) rSumG[i] += wSumG[i];
+    rN += wN;
+    rSec++;
+    if (rSec % STILL_UPDATE_SEC == 0 && rN > 0) {
+      biasX = rSumG[0] / rN;
+      biasY = rSumG[1] / rN;
+      biasZ = rSumG[2] / rN;
+      biasTemp = tempC;
+      biasUpdates++;
+      for (int i = 0; i < 3; i++) rSumG[i] = 0;
+      rN = 0;
+      float d = fmaxf(fabsf(biasX - savedX), fmaxf(fabsf(biasY - savedY), fabsf(biasZ - savedZ)));
+      if (d > SAVE_MIN_DIFF && (!savedOnce || millis() - savedMs >= SAVE_MIN_MS)) saveBias();
+    }
+  } else {
+    for (int i = 0; i < 3; i++) rSumG[i] = 0;
+    rN = 0;
+    rSec = 0;
+  }
+  for (int i = 0; i < 3; i++) wSumG[i] = 0;
+  wSumA = wSumA2 = 0;
+  wMaxG = 0;
+  wN = 0;
+}
+
+// Kalibrace na pozadí – každý vzorek (surové gyro)
+static void bgCalTrack(float rx, float ry, float rz) {
+  if (!bgCal) return;
+  float r[3] = {rx, ry, rz};
+  for (int i = 0; i < 3; i++) {
+    bgSum[i] += r[i];
+    bgSq[i] += (double)r[i] * r[i];
+  }
+  bgN++;
+  if (millis() - bgCalMs < bgCalDur) return;
+  bgCal = false;
+  bgOk = bgN >= 50;
+  double mean[3];
+  if (bgOk) {
+    for (int i = 0; i < 3; i++) {
+      mean[i] = bgSum[i] / bgN;
+      double v = bgSq[i] / bgN - mean[i] * mean[i];
+      if (v > 0.25) bgOk = false;  // σ > 0,5 °/s = pohyb
+    }
+  }
+  if (bgOk) {
+    biasX = mean[0];
+    biasY = mean[1];
+    biasZ = mean[2];
+    biasTemp = tempC;
+    saveBias();
+  }
+  bgDone = true;
 }
 
 // ---------------------------------------------------------------- časová synchronizace
@@ -128,12 +245,15 @@ static void pushSample() {
   Sample s;
   double chip = (double)tsLast + samplesSinceTs * ticksPerSample;
   s.tUs = (tsValid && syncValid) ? chipToUs(chip) : esp_timer_get_time();
-  s.gx = gRaw[0] * GYRO_SENS - biasX;
-  s.gy = gRaw[1] * GYRO_SENS - biasY;
-  s.gz = gRaw[2] * GYRO_SENS - biasZ;
+  float rx = gRaw[0] * GYRO_SENS, ry = gRaw[1] * GYRO_SENS, rz = gRaw[2] * GYRO_SENS;
   s.ax = aRaw[0] * ACC_SENS;
   s.ay = aRaw[1] * ACC_SENS;
   s.az = aRaw[2] * ACC_SENS;
+  stillTrack(rx, ry, rz, s.ax, s.ay, s.az);
+  bgCalTrack(rx, ry, rz);
+  s.gx = rx - biasX;
+  s.gy = ry - biasY;
+  s.gz = rz - biasZ;
   s.tempC = tempC;
   samplesSinceTs++;
   last = s;
@@ -376,6 +496,7 @@ bool calibrateGyro(uint32_t durationMs, void (*idle)()) {
   // dočasně vynulovat bias, aby se měřila surová hodnota
   float ox = biasX, oy = biasY, oz = biasZ;
   biasX = biasY = biasZ = 0;
+  blockingCal = true;
   double sx = 0, sy = 0, sz = 0, qx = 0, qy = 0, qz = 0;
   uint32_t n = 0;
   uint32_t lastCount = st.samples;
@@ -407,20 +528,51 @@ bool calibrateGyro(uint32_t durationMs, void (*idle)()) {
       biasZ = mz;
     }
   }
+  blockingCal = false;
   if (!ok) {
     biasX = ox;
     biasY = oy;
     biasZ = oz;
     return false;
   }
-  Preferences p;
-  p.begin("imu", false);
-  p.putFloat("gbx", biasX);
-  p.putFloat("gby", biasY);
-  p.putFloat("gbz", biasZ);
-  p.end();
+  biasTemp = tempC;
+  saveBias();
   return true;
 }
+
+void startCalibration(uint32_t durationMs) {
+  for (int i = 0; i < 3; i++) bgSum[i] = bgSq[i] = 0;
+  bgN = 0;
+  bgCalDur = durationMs;
+  bgCalMs = millis();
+  bgDone = false;
+  bgOk = false;
+  bgCal = addr != 0;
+  if (!bgCal) bgDone = true;
+}
+
+bool calRunning() { return bgCal; }
+
+bool calResult(bool &ok) {
+  if (!bgDone) return false;
+  bgDone = false;
+  ok = bgOk;
+  return true;
+}
+
+BiasInfo biasInfo() {
+  BiasInfo b;
+  b.bx = biasX;
+  b.by = biasY;
+  b.bz = biasZ;
+  b.tempC = biasTemp;
+  b.updates = biasUpdates;
+  b.stillSec = rSec;
+  b.still = winStill;
+  return b;
+}
+
+float temperature() { return tempC; }
 
 void gyroBias(float &bx, float &by, float &bz) {
   bx = biasX;

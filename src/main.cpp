@@ -440,8 +440,8 @@ static void handleCommand(String cmd) {
     case 'c': initGnss(); break;
     case 'm': printImuSamples(); break;
     case 'g':
-      Serial.println("Kalibrace gyra – nehýbej přístrojem 3 s...");
-      if (imu::calibrateGyro(3000, gnss::poll)) {
+      Serial.println("Kalibrace gyra – nehýbej přístrojem 30 s...");
+      if (imu::calibrateGyro(30000, gnss::poll)) {
         float bx, by, bz;
         imu::gyroBias(bx, by, bz);
         Serial.printf("Bias gyra %.3f %.3f %.3f °/s (uloženo).\n", bx, by, bz);

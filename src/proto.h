@@ -73,7 +73,8 @@ void setHooks(const Hooks &h);
 //   {"cmd":"get","what":"device"} / {"cmd":"set","what":"device","data":{"btName":"…"}}  – název BT platí po restartu
 //   {"cmd":"get","what":"cal"}  – bias gyra, koeficient děliče baterie
 //   {"cmd":"cal","what":"battery","v":3.86}  – změřené napětí baterie [V]
-//   {"cmd":"cal","what":"gyro"}  – přístroj v klidu, 3 s
+//   {"cmd":"cal","what":"gyro","ms":30000}  – přístroj v klidu, na pozadí 30 s (FW 0.15.0); odpověď
+//       {"ok":true,"pending":true,"ms":…}, výsledek událostí {"ev":"cal_gyro","ok":…,"gyro":[…]}
 //   {"cmd":"passthrough","op":"start|stop"}  – průchozí režim USB <-> X20 (konec i krátkým stiskem tlačítka)
 //   {"cmd":"restart"}
 

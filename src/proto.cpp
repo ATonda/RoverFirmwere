@@ -177,16 +177,20 @@ static void safeCopy(char *dst, size_t size, const char *src) {
 //           ubxOk,ubxVadné,mgaAck,mgaNak,mgaDbd,ackAiding (0.11.0),frekvence[Hz] (0.12.0),
 //           zdrojKorekcí(NAV-SIG, -1 žádný),signálůSKorekcí,korekceCfg(1 OK/0 NAK/-1),průchozí,navZáznam (0.13.0),
 //           stav(0 Měřím,1 Manipulace,2 Chodím,3 Jedu),automaticky(0/1),modelX20,|a|σ[mg],|a|odchylka[mg],
-//           ωmax[°/s],kroky(0–100),krokyHz,rychlost[m/s](-1 bez fixu),změnStavu (0.14.0)
+//           ωmax[°/s],kroky(0–100),krokyHz,rychlost[m/s](-1 bez fixu),změnStavu (0.14.0),
+//           teplotaIMU[°C],klid(0/1, okno 1 s),krokůCelkem,aktualizacíBiasu,biasX,biasY,biasZ[°/s],kalibraceBěží(0/1) (0.15.0)
 // Od 0.13.0 nemá rover měření bodu – pole měřeníFáze/Čas/Epochy jsou 0.
+void pollCal();  // níže (výsledek kalibrace gyra na pozadí)
+
 void sendSta() {
+  pollCal();
   if (!btlink::connected()) return;
   btlink::Stats bs = btlink::stats();
   gnss::Stats gs = gnss::stats();
   float v = power::batteryVolts();
   char pname[25];
   safeCopy(pname, sizeof(pname), settings::profile(settings::active()).name);
-  char b[448];
+  char b[560];
   int n = snprintf(b, sizeof(b), "$PRVR,STA,%s,%.2f,%d,%d,%d,%s,%lu,%lu,", FW_VERSION, v, power::batteryPercentStable(),
                    settings::active(), settings::count(), pname, (unsigned long)bs.rtcmOk, (unsigned long)bs.rtcmBad);
   if (bs.rtcmOk) n += snprintf(b + n, sizeof(b) - n, "%.1f,%u,", (millis() - bs.rtcmLastMs) / 1000.0f, bs.rtcmLastType);
@@ -210,6 +214,11 @@ void sendSta() {
                 motion::autoOn() ? 1 : 0, gnss::dynEffective(), (int)lroundf(mf.accStd * 1000),
                 (int)lroundf(mf.accDev * 1000), mf.gyroMax, (int)lroundf(mf.stepScore * 100), mf.stepHz, mf.speed,
                 (unsigned long)motion::changes());
+  // od FW 0.15.0: teplota IMU, klid, kroky, průběžná kalibrace gyra
+  imu::BiasInfo bi = imu::biasInfo();
+  n += snprintf(b + n, sizeof(b) - n, ",%.2f,%d,%lu,%lu,%.4f,%.4f,%.4f,%d", imu::temperature(), bi.still ? 1 : 0,
+                (unsigned long)motion::steps(), (unsigned long)bi.updates, bi.bx, bi.by, bi.bz,
+                imu::calRunning() ? 1 : 0);
   emit(b, sizeof(b), n);
   btlink::flush();
 }
@@ -247,6 +256,24 @@ void sendSat() {
 // ---------------------------------------------------------------- příkazy JSON
 // Odpověď na jednom řádku; do BT po částech (dávka BT má 2 kB), do konzole USB přímo
 static bool toConsole = false;
+static bool calToConsole = false;  // kam poslat výsledek kalibrace gyra na pozadí
+static void calJson(JsonDocument &d);
+static void reply(JsonDocument &d);
+
+// Výsledek kalibrace gyra na pozadí: {"ev":"cal_gyro","ok":true|false,"gyro":[…],…}
+void pollCal() {
+  bool ok = false;
+  if (!imu::calResult(ok)) return;
+  JsonDocument d;
+  d["ev"] = "cal_gyro";
+  d["ok"] = ok;
+  if (!ok) d["err"] = "pohyb nebo málo vzorků – bias beze změny";
+  calJson(d);
+  bool prev = toConsole;
+  toConsole = calToConsole;
+  if (toConsole || btlink::connected()) reply(d);
+  toConsole = prev;
+}
 
 static void reply(JsonDocument &d) {
   String out;
@@ -374,9 +401,15 @@ static void handle(const char *line, size_t len) {
       if (!imu::present()) {
         out["ok"] = false;
         out["err"] = "IMU nenalezeno";
-      } else if (!imu::calibrateGyro(3000, hooks.idle)) {
-        out["ok"] = false;
-        out["err"] = "pohyb nebo málo vzorků – bias beze změny";
+      } else {
+        // FW 0.15.0: 30 s na pozadí (smyčka a BT běží dál), výsledek přijde jako událost "cal_gyro"
+        uint32_t ms = in["ms"] | 30000;
+        if (ms < 3000) ms = 3000;
+        if (ms > 120000) ms = 120000;
+        calToConsole = toConsole;
+        imu::startCalibration(ms);
+        out["pending"] = true;
+        out["ms"] = ms;
       }
     } else {
       out["ok"] = false;

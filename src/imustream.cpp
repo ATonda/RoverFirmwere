@@ -11,7 +11,7 @@ static constexpr uint8_t CLS = 0xF5;
 static constexpr uint8_t ID = 0x01;
 static constexpr int DECIM = 2;
 static constexpr int PER_FRAME = 30;
-static constexpr int HEAD = 4 + 8 + 4 + 8 + 8 + 12;
+static constexpr int HEAD = 4 + 8 + 4 + 8 + 8 + 12 + 4;
 static constexpr int SAMPLE = 14;
 
 static uint8_t payload[HEAD + PER_FRAME * SAMPLE];
@@ -39,10 +39,11 @@ static void send() {
   float bx, by, bz;
   imu::gyroBias(bx, by, bz);
   int o = 0;
-  put<uint8_t>(o, 1);
+  imu::BiasInfo bi = imu::biasInfo();
+  put<uint8_t>(o, 2);
   put<uint8_t>(o, (uint8_t)n);
   put<uint8_t>(o, DECIM);
-  put<uint8_t>(o, (uint8_t)((p.timeValid ? 1 : 0) | (gs.ppsCount ? 2 : 0)));
+  put<uint8_t>(o, (uint8_t)((p.timeValid ? 1 : 0) | (gs.ppsCount ? 2 : 0) | (bi.still ? 4 : 0)));
   put<int64_t>(o, t0);
   put<uint32_t>(o, p.iTOW);
   put<int64_t>(o, p.rxUs);
@@ -50,6 +51,7 @@ static void send() {
   put<float>(o, bx);
   put<float>(o, by);
   put<float>(o, bz);
+  put<float>(o, imu::temperature());
   // vzorky už jsou v payload od HEAD
   uint16_t len = HEAD + n * SAMPLE;
   uint16_t fl = ubx::frame(CLS, ID, payload, len, out);

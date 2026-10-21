@@ -7,9 +7,12 @@ namespace motion {
 // ---------------------------------------------------------------- meze (první odhad z testů 20. 10.)
 static constexpr int WIN = 240;                 // okno 2 s při 120 Hz
 static constexpr int STEP = 60;                 // vyhodnocení po 0,5 s
-static constexpr float STILL_GYRO = 3.0f;       // klid: |ω| < 3 °/s
+// FW 0.15.0: klid podle vyhodnocení 21. 10. (v jízdě nikdy σ|a| < 15 mg a ω < 2,2 °/s, v klidu σ 0,4–0,6 mg, ω < 0,35 °/s)
+static constexpr float STILL_GYRO = 1.5f;       // klid: |ω| < 1,5 °/s
 static constexpr float STILL_DEV = 0.05f;       //       ||a| − 1 g| < 0,05 g
-static constexpr float STILL_STD = 0.015f;      //       rozptyl |a| < 0,015 g
+static constexpr float STILL_STD = 0.005f;      //       rozptyl |a| < 0,005 g
+static constexpr float UNREST_GYRO = 3.0f;      // odchod z Měřím: vzorek nad mezí |ω| > 3 °/s (beze změny)
+static constexpr float SACC_TRUST = 0.1f;       // [m/s] rychlost GNSS pro stání jen při sAcc < 0,1 m/s
 static constexpr float STEP_SCORE = 0.35f;      // kroky: autokorelace > 0,35
 static constexpr float STEP_STD_MIN = 0.05f;    //        a rozptyl |a| 0,05–0,6 g
 static constexpr float STEP_STD_MAX = 0.6f;
@@ -54,11 +57,13 @@ static uint8_t sentModel = 0xFF;
 static uint32_t sentMs = 0;
 static uint32_t nChanges = 0;
 static bool evalPending = false;
+static float sAccNow = 99.0f;
+static double stepTotal = 0;
 
 void onImu(const imu::Sample &s) {
   bufA[head] = sqrtf(s.ax * s.ax + s.ay * s.ay + s.az * s.az);
   bufG[head] = sqrtf(s.gx * s.gx + s.gy * s.gy + s.gz * s.gz);
-  uint8_t over = (bufG[head] > STILL_GYRO || fabsf(bufA[head] - 1.0f) > STILL_DEV) ? 1 : 0;
+  uint8_t over = (bufG[head] > UNREST_GYRO || fabsf(bufA[head] - 1.0f) > STILL_DEV) ? 1 : 0;
   overSum += over - overBuf[overHead];
   overBuf[overHead] = over;
   overHead = (overHead + 1) % UNREST_WIN;
@@ -78,6 +83,7 @@ void onImu(const imu::Sample &s) {
 void onPvt() {
   const gnss::Pvt &p = gnss::pvt();
   f.speed = (p.valid && p.gnssFixOk && p.fixType >= 2 && p.sAcc < 1.0f) ? p.gSpeed : -1.0f;
+  sAccNow = (p.valid && p.gnssFixOk) ? p.sAcc : 99.0f;
 }
 
 // Znaky okna: rozptyl |a|, odchylka od 1 g, max |ω|, autokorelace kroků
@@ -145,6 +151,9 @@ static void evaluate() {
   nSmooth = (v > V_CAR && f.accStd < CAR_STD_MAX && !f.steps) ? nSmooth + 1 : 0;
   nFast = v > V_DRIVE ? nFast + 1 : 0;
   nMed = (v > V_WALK && !f.steps) ? nMed + 1 : 0;
+  if (f.steps) stepTotal += f.stepHz * (STEP / 120.0);
+  // stání: rychlost GNSS jen když je spolehlivá (v domě GNSS v klidu hlásí až 0,26 m/s při sAcc 0,27)
+  bool stopped = v < V_STOP || sAccNow >= SACC_TRUST;
 
   if (cur == MEASURE) {
     // úder, klepnutí, dveře, vítr Měřím nepřeruší; zvednutí (ω > 20 °/s ≥ 0,2 s) nebo neklid > 0,5 s z 1,5 s ano
@@ -155,7 +164,7 @@ static void evaluate() {
     else setState(HANDLE);
     return;
   }
-  if (nStill >= N_MEASURE && v < V_STOP) setState(MEASURE);
+  if (nStill >= N_MEASURE && stopped) setState(MEASURE);
   else if (cur != DRIVE && (nFast >= N_DRIVE_FAST || nMed >= N_DRIVE_MED || nSmooth >= N_DRIVE_SMOOTH)) setState(DRIVE);
   else if (cur == DRIVE && nSteps >= N_WALK_FROM_DRIVE && v < V_WALK) setState(WALK);
   else if (cur == HANDLE && (nSteps >= N_WALK || nWalkV >= N_WALK) && v < V_WALK) setState(WALK);
@@ -204,5 +213,6 @@ const char *stateName(State s) {
 
 const Features &features() { return f; }
 uint32_t changes() { return nChanges; }
+uint32_t steps() { return (uint32_t)stepTotal; }
 
 }  // namespace motion
