@@ -20,6 +20,9 @@ struct Stats {
   uint32_t backlogMax = 0;    // největší nepotvrzená data v zásobníku BT [B]
   uint32_t ubxOk = 0;         // celé rámce UBX z mobilu (asistence MGA) se správným součtem
   uint32_t ubxBad = 0;        // rámce UBX z mobilu s chybným součtem nebo délkou
+  uint32_t rxDropped = 0;     // bajty z mobilu zahozené – přetečení přijímacího bufferu (0.15.1)
+  uint32_t rxMaxFill = 0;     // největší zaplnění přijímacího bufferu [B] (0.15.1)
+  uint32_t cmdAborted = 0;    // začátky „JSON“ zrušené binárním bajtem (data vrácena do proudu X20) (0.15.1)
 };
 
 // Příkaz JSON z mobilu: řádek začínající '{' mimo rámec RTCM a UBX, bez \n

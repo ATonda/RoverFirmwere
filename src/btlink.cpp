@@ -2,6 +2,7 @@
 
 #include <BluetoothSerial.h>
 #include <esp_mac.h>
+#include <freertos/stream_buffer.h>
 
 #include "config.h"
 #include "gnss.h"
@@ -87,6 +88,19 @@ static size_t cmdLen = 0;
 static bool cmdOverflow = false;
 static CmdHandler cmdHandler = nullptr;
 
+// ---------------------------------------------------------------- příjem z mobilu (0.15.1)
+// BluetoothSerial má pevnou frontu příjmu 512 B a při zaplnění zbytek paketu tiše zahodí
+// (CZEPOS MSM5 posílá 1–2 kB najednou). Data se proto berou přímo v tasku BT (onData)
+// do vlastního bufferu a hlavní smyčka je čte v poll().
+static constexpr size_t BT_RX_BUF = 8192;
+static StreamBufferHandle_t rxSb = nullptr;
+
+static void onBtData(const uint8_t *d, size_t n) {
+  if (!rxSb || !n) return;
+  size_t w = xStreamBufferSend(rxSb, d, n, 0);
+  if (w < n) st.rxDropped += n - w;
+}
+
 static void rtcmFeed(uint8_t c) {
   if (rtcmPos == 0) {
     if (c != 0xD3) return;
@@ -160,6 +174,9 @@ bool begin(const char *customName) {
   });
   // Potvrzení odeslaných dat (WRITE_EVT) – kolik bajtů ještě čeká v zásobníku BT
   bt.register_callback(sppEvent);
+  // Příjem přímo do vlastního bufferu (fronta BluetoothSerial 512 B přetéká); bez paměti zůstane výchozí fronta
+  if (!rxSb) rxSb = xStreamBufferCreate(BT_RX_BUF, 1);
+  if (rxSb) bt.onData(onBtData);
   // Jen BT Classic: paměť řadiče pro BLE se uvolní. BLE pak do restartu nejde zapnout.
   started = bt.begin(btName, false, true);
   return started;
@@ -176,57 +193,99 @@ const char *name() { return btName; }
 
 bool active() { return started; }
 
+// Bajty pro X20 (vše kromě řádků JSON) se skládají a posílají po dávkách
+static uint8_t fwd[256];
+static size_t fwdLen = 0;
+
+static void fwdFlush() {
+  if (fwdLen) {
+    gnss::writeRaw(fwd, fwdLen);
+    fwdLen = 0;
+  }
+}
+
+static void fwdByte(uint8_t c) {
+  fwd[fwdLen++] = c;
+  if (fwdLen == sizeof(fwd)) fwdFlush();
+  if (rtcmPos != 0 || !ubxFeed(c)) rtcmFeed(c);
+}
+
+// Binární bajt uvnitř „řádku JSON“: '{' byl bajt binárních dat (RTCM/UBX po ztrátě synchronizace).
+// Pohlcené bajty se vrátí do proudu pro X20, statistika RTCM se podle nich znovu zasynchronizuje.
+static void cmdAbort(uint8_t c) {
+  st.cmdAborted++;
+  size_t n = cmdLen;
+  cmdLen = 0;
+  cmdOverflow = false;
+  for (size_t i = 0; i < n; i++) fwdByte((uint8_t)cmdBuf[i]);
+  fwdByte(c);
+}
+
+static void rxByte(uint8_t c) {
+  // Řádek JSON začíná '{' mimo rámec RTCM a UBX a končí \n; do X20 nejde
+  if (cmdLen == 0 && rtcmPos == 0 && ubxPos == 0 && c == '{') {
+    cmdBuf[cmdLen++] = c;
+    return;
+  }
+  if (cmdLen > 0) {
+    if (c == '\n' || c == '\r') {
+      fwdFlush();
+      if (!cmdOverflow && cmdHandler) {
+        cmdBuf[cmdLen] = 0;
+        st.cmds++;
+        cmdHandler(cmdBuf, cmdLen);
+      }
+      cmdLen = 0;
+      cmdOverflow = false;
+    } else if (c < 0x20 && c != '\t') {
+      cmdAbort(c);  // řídicí bajt v JSON být nemůže (UTF-8 nad 0x7F je povolené)
+    } else if (cmdLen < sizeof(cmdBuf) - 1) {
+      cmdBuf[cmdLen++] = c;
+    } else {
+      cmdOverflow = true;  // příliš dlouhý řádek – zahodit až do konce řádku
+    }
+    return;
+  }
+  fwdByte(c);
+}
+
 void poll() {
   if (!started) return;
   bool c = bt.hasClient();
   if (c && !st.connected) {
     st.connects++;
     pendingEvent = Event::Connected;
+    // nové spojení: rozpracované rámce a řádek z minulého spojení zahodit
+    cmdLen = 0;
+    cmdOverflow = false;
+    rtcmPos = 0;
+    ubxPos = 0;
+    ubxLen = 0;
   } else if (!c && st.connected) {
     pendingEvent = Event::Disconnected;
   }
   st.connected = c;
 
   uint8_t buf[256];
-  uint8_t fwd[256];  // bajty pro X20 (vše kromě řádků JSON)
-  int n;
-  while ((n = bt.available()) > 0) {
-    n = bt.readBytes(buf, n > (int)sizeof(buf) ? sizeof(buf) : n);
-    if (n <= 0) break;
-    st.rxBytes += n;
-    int f = 0;
-    for (int i = 0; i < n; i++) {
-      uint8_t c = buf[i];
-      // Řádek JSON začíná '{' mimo rámec RTCM a UBX a končí \n; do X20 nejde
-      if (cmdLen == 0 && rtcmPos == 0 && ubxPos == 0 && c == '{') {
-        cmdBuf[cmdLen++] = c;
-        continue;
-      }
-      if (cmdLen > 0) {
-        if (c == '\n' || c == '\r') {
-          if (f) {
-            gnss::writeRaw(fwd, f);
-            f = 0;
-          }
-          if (!cmdOverflow && cmdHandler) {
-            cmdBuf[cmdLen] = 0;
-            st.cmds++;
-            cmdHandler(cmdBuf, cmdLen);
-          }
-          cmdLen = 0;
-          cmdOverflow = false;
-        } else if (cmdLen < sizeof(cmdBuf) - 1) {
-          cmdBuf[cmdLen++] = c;
-        } else {
-          cmdOverflow = true;  // příliš dlouhý řádek – zahodit až do konce řádku
-        }
-        continue;
-      }
-      fwd[f++] = c;
-      if (rtcmPos != 0 || !ubxFeed(c)) rtcmFeed(c);
+  if (rxSb) {
+    size_t fill = xStreamBufferBytesAvailable(rxSb);
+    if (fill > st.rxMaxFill) st.rxMaxFill = fill;
+    size_t n;
+    int rounds = 0;  // nejvýš 8 kB za jedno volání, ať smyčka nestojí
+    while (rounds++ < 32 && (n = xStreamBufferReceive(rxSb, buf, sizeof(buf), 0)) > 0) {
+      st.rxBytes += n;
+      for (size_t i = 0; i < n; i++) rxByte(buf[i]);
     }
-    if (f) gnss::writeRaw(fwd, f);
+  } else {
+    int n;
+    while ((n = bt.available()) > 0) {
+      n = bt.readBytes(buf, n > (int)sizeof(buf) ? sizeof(buf) : n);
+      if (n <= 0) break;
+      st.rxBytes += n;
+      for (int i = 0; i < n; i++) rxByte(buf[i]);
+    }
   }
+  fwdFlush();
 }
 
 bool connected() { return started && st.connected; }

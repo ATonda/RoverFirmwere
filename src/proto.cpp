@@ -179,6 +179,7 @@ static void safeCopy(char *dst, size_t size, const char *src) {
 //           stav(0 Měřím,1 Manipulace,2 Chodím,3 Jedu),automaticky(0/1),modelX20,|a|σ[mg],|a|odchylka[mg],
 //           ωmax[°/s],kroky(0–100),krokyHz,rychlost[m/s](-1 bez fixu),změnStavu (0.14.0),
 //           teplotaIMU[°C],klid(0/1, okno 1 s),krokůCelkem,aktualizacíBiasu,biasX,biasY,biasZ[°/s],kalibraceBěží(0/1) (0.15.0)
+//           btPřijemZahozeno[B],btPřijemMaxBuffer[B],jsonZrušeno (0.15.1)
 // Od 0.13.0 nemá rover měření bodu – pole měřeníFáze/Čas/Epochy jsou 0.
 void pollCal();  // níže (výsledek kalibrace gyra na pozadí)
 
@@ -219,6 +220,9 @@ void sendSta() {
   n += snprintf(b + n, sizeof(b) - n, ",%.2f,%d,%lu,%lu,%.4f,%.4f,%.4f,%d", imu::temperature(), bi.still ? 1 : 0,
                 (unsigned long)motion::steps(), (unsigned long)bi.updates, bi.bx, bi.by, bi.bz,
                 imu::calRunning() ? 1 : 0);
+  // od FW 0.15.1: příjem z mobilu – zahozené bajty (přetečení bufferu), největší zaplnění bufferu, zrušené „JSON“
+  n += snprintf(b + n, sizeof(b) - n, ",%lu,%lu,%lu", (unsigned long)bs.rxDropped, (unsigned long)bs.rxMaxFill,
+                (unsigned long)bs.cmdAborted);
   emit(b, sizeof(b), n);
   btlink::flush();
 }
