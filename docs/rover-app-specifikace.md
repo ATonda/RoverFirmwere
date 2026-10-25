@@ -352,3 +352,6 @@ Cíl: kratší studený start X20 po delším vypnutí bez účtu a bez internet
 
 - **Živě – řádek tlačítek Okamžitě / Průměr / Terč / Vynulovat:** „Vynulovat“ přetéká za okraj displeje. Zmenšit rámečky (vnitřní okraje, mezery, případně písmo), aby se všechna čtyři tlačítka vešla celá na jeden řádek v šířce displeje.
 - **Spodní lišta záložek:** „Nastavení“ se zalamuje na dva řádky („Nastav-ení“). Upravit tak, aby všech šest záložek (Živě, Body, Telefon, Test, Auto, Nastavení) mělo popisek na jednom řádku.
+- **Ukládání surových dat při měření rychlosti (důležité pro EKF):** v profilu Rychlost ukládat polohu 10 Hz a rámce IMU 120 Hz do ZIPu jako u testů (nejjednodušeji povolit záznam testu i během měření rychlosti). Souhrny výsledků k ladění filtru nestačí.
+- **Záložka Auto – řádek „Max. zrychlení / brzdění / příčně“:** hodnoty se zalamují na druhý řádek; kratší popisek nebo hodnoty pod popisek.
+
