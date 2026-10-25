@@ -347,3 +347,8 @@ Cíl: kratší studený start X20 po delším vypnutí bez účtu a bez internet
 - **Záložka Auto:** „Aktivovat měření“ = rover do profilu Rychlost (každých 5 s „žiju“), „Ukončit měření“ = návrat. Velká rychlost, maximum, průměr za jízdu a 10 s, dráha, podélné zrychlení / brzdění (IMU, posun sklonu a biasu odečtený proti GNSS) a příčné (rychlost × otáčení z gyra) v g s maximy. Orientace krabičky se určí sama (svislice z průměru za jízdy, směr jízdy regresí proti změně rychlosti GNSS). Testy: 0–50, 0–100, vlastní 0–X, 60–100, 80–120, 100–0, 50–0, 100 / 200 / 400 / 1000 m; nabití klepnutím, start i konec samy (rozjezd z IMU, překročení rychlostí interpolací, dráha integrací rychlosti), sklon nad 1 % a výpadek GNSS u výsledku, historie (200) v telefonu. Odchod ze záložky při měření: dotaz Ukončit / Pokračovat s výčtem omezení; na mapě štítek „Rychlost – měření“. Měření bodu a testy během měření rychlosti nejdou.
 - **Dopočet při výpadku GNSS** (stav Jedu nebo měření rychlosti, když chodí IMU – záznam, test, měření rychlosti; nejdéle 120 s): kurz z gyra, rychlost z poslední platné epochy (i DGNSS), prvních 10 s z akcelerometru, pak držená (rozbor umělých výpadků, `ekf-vyhodnoceni.md`, kap. 12). Body s kvalitou 6 do záznamu a stopy na mapě, ne do měření bodu.
 - Verze 0.9.0 (versionCode 19).
+
+## 18. Požadavky na další verzi (25. 10.)
+
+- **Živě – řádek tlačítek Okamžitě / Průměr / Terč / Vynulovat:** „Vynulovat“ přetéká za okraj displeje. Zmenšit rámečky (vnitřní okraje, mezery, případně písmo), aby se všechna čtyři tlačítka vešla celá na jeden řádek v šířce displeje.
+- **Spodní lišta záložek:** „Nastavení“ se zalamuje na dva řádky („Nastav-ení“). Upravit tak, aby všech šest záložek (Živě, Body, Telefon, Test, Auto, Nastavení) mělo popisek na jednom řádku.
