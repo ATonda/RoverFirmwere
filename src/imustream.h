@@ -1,6 +1,7 @@
 // Surová data IMU do BT při záznamu v aplikaci (ladění krokového dopočtu / EKF offline)
 //
 // Rámec UBX třídy 0xF5 (vlastní), ID 0x01, každých 0,5 s (30 vzorků 60 Hz – každý druhý ze 120 Hz).
+// FW 0.16.0: při měření rychlosti (proto::speedMode) i bez záznamu, všech 120 Hz (decimace 1, rámec po 0,25 s).
 // Aplikace ho neinterpretuje, ukládá se se surovým proudem trasy (track_N.log).
 // Obsah (little endian):
 //   u8  verze = 2 (FW 0.15.0; verze 1 = bez teploty, hlavička 44 B)

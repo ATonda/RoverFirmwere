@@ -3,13 +3,16 @@
 #include "btlink.h"
 #include "epochbuf.h"
 #include "gnss.h"
+#include "proto.h"
 #include "ubx.h"
 
 namespace imustream {
 
 static constexpr uint8_t CLS = 0xF5;
 static constexpr uint8_t ID = 0x01;
-static constexpr int DECIM = 2;
+static constexpr int DECIM = 2;        // záznam: každý druhý vzorek (60 Hz)
+static constexpr int DECIM_SPEED = 1;  // měření rychlosti (FW 0.16.0): všechny vzorky (120 Hz)
+static int decim = DECIM;
 static constexpr int PER_FRAME = 30;
 static constexpr int HEAD = 4 + 8 + 4 + 8 + 8 + 12 + 4;
 static constexpr int SAMPLE = 14;
@@ -42,7 +45,7 @@ static void send() {
   imu::BiasInfo bi = imu::biasInfo();
   put<uint8_t>(o, 2);
   put<uint8_t>(o, (uint8_t)n);
-  put<uint8_t>(o, DECIM);
+  put<uint8_t>(o, (uint8_t)decim);
   put<uint8_t>(o, (uint8_t)((p.timeValid ? 1 : 0) | (gs.ppsCount ? 2 : 0) | (bi.still ? 4 : 0)));
   put<int64_t>(o, t0);
   put<uint32_t>(o, p.iTOW);
@@ -62,12 +65,20 @@ static void send() {
 }
 
 void onImu(const imu::Sample &s) {
-  if (!ebuf::recording() || !btlink::connected()) {
+  bool speed = proto::speedMode();
+  if ((!ebuf::recording() && !speed) || !btlink::connected()) {
     n = 0;
     skip = 0;
     return;
   }
-  if (skip++ % DECIM) return;
+  int want = speed ? DECIM_SPEED : DECIM;
+  if (want != decim) {  // změna režimu – rozpracovaný rámec odeslat se starou decimací
+    if (n) send();
+    n = 0;
+    skip = 0;
+    decim = want;
+  }
+  if (skip++ % decim) return;
   if (n == 0) t0 = s.tUs;
   int64_t dt = (s.tUs - t0) / 100;
   if (dt < 0 || dt > 65535) {  // díra ve vzorcích – začít nový rámec

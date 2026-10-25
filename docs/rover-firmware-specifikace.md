@@ -435,3 +435,27 @@ Hlavní použití: měření za chůze (mapování), statické geodetické měř
 - `motion`: klid (vstup do Měřím) σ|a| < 5 mg a |ω| < 1,5 °/s (dřív 15 mg / 3 °/s); odchod z Měřím beze změny (vzorek nad mezí |ω| > 3 °/s nebo ||a| − 1 g| > 0,05 g). Podmínka rychlosti GNSS < 0,2 m/s platí jen při sAcc < 0,1 m/s. Odhad počtu kroků (kadence × doba s kroky).
 - `$PRVR,STA` na konci navíc: teplota IMU [°C], klid (0/1), kroků celkem, aktualizací biasu, bias X, Y, Z [°/s], kalibrace běží (0/1).
 - Velikost: RAM 72,3 kB (22,1 %), flash 1,23 MB.
+
+**Verze 0.15.1 (22. 10.) – ověřeno na HW s CZEPOS RTK3-MSM:** příjem RTCM z BT bez ztrát.
+- Příčina: BluetoothSerial (jádro 3.3) má pevnou frontu příjmu 512 B a při zaplnění zbytek paketu tiše zahodí; CZEPOS MSM5 posílá 1–2 kB najednou → v roveru 28 z 30 rámců chybných, z binárních dat falešné „chybný JSON“.
+- `btlink`: příjem přes `bt.onData` do vlastního bufferu 8 kB (FreeRTOS stream buffer), `poll()` čte z něj; bez paměti zůstane původní fronta.
+- Řídicí bajt (< 0x20 kromě `\t`) uvnitř „řádku JSON“ příkaz zruší, pohlcené bajty jdou zpět do proudu pro X20 a do počítání RTCM. Nové spojení BT zahodí rozpracované rámce RTCM/UBX a řádek JSON.
+- `$PRVR,STA` na konci navíc: bajty zahozené přetečením bufferu, největší zaplnění bufferu [B], zrušené „JSON“.
+
+**Test 22. 10. „Město“ (FW 0.15.1, Automat 5 Hz, CZEPOS RTK3-MSM, rover na palubní desce, 28 min, Blanka; `ekf-vyhodnoceni.md`, kap. 9):** RTK fix 96 % epoch se signálem, po přerušení fix do 1–3 s, po tunelu fix za 3,4 s (NTRIP v tunelu běžel dál). BT 4,0 kB/s z roveru + 1,86 kB/s RTCM do roveru (současně BT telefonu s CurieFinderem), fronta prakticky 0, žádné ztráty, 0 chybných RTCM z 9973.
+
+**Požadavky z testu 22. 10. (návrh, nerozhodnuto):**
+1. **`motion` bez fixu:** v tunelu (235 s bez řešení) přešel stav Jedu → Manipulace → Chodím a X20 dostal model pedestrian (vibrace auta ~55 mg bez rychlosti GNSS). Bez fixu stav Jedu podržet; změnit jen na Měřím při jasném klidu, nikdy na Chodím / Manipulaci.
+2. **Klid a bias gyra v autě:** s běžícím motorem je na stání σ|a| 10–30 mg, detektor klidu (5 mg / 1,5 °/s) za jízdy nesepne nikdy → bias se neaktualizuje, přitom se mění s teplotou (IMU 18 → 28 °C, bias Z 0,19 → 0,08 °/s). Samotné IMU stání od plynulé jízdy neoddělí, samotná rychlost GNSS také ne (Purkyňova 15. 10.: X20 hlásilo 0,46 m/s v klidu, poloha ujela ~100 m). Návrh: v autě klid = GNSS i IMU současně – rychlost < 0,05 m/s, sAcc < 0,1 m/s (na stání s RTK fixem 0,06–0,08 m/s), RTK fix nebo hAcc < 0,1 m, IMU po dolní propusti 0,5 s σ|a| < 8 mg a |ω| < 1,5 °/s, aspoň 5 s. Při nesouladu nic neaktualizovat. Použít jen pro bias gyra, ne pro držení polohy.
+3. ~~Časování IMU~~ – opraveno 23. 10.: zpoždění NAV-PVT za epochou 30 ms (z PPS v rámcích 0xF5), čas IMU přes `pvtRxUs` je správně. Posun 0,15–0,22 s je filtr kurzu v X20, ne čas IMU.
+4. ~~Měřítko gyra~~ – opraveno 23. 10.: 1,000 (0,965 z 22. 10. byla chyba odhadu).
+
+**Test 23. 10. (FW 0.15.1, YT hudba přes BT + CurieFinder + rover + hovor, 30 min; `ekf-vyhodnoceni.md`, kap. 10):** BT 4,1 kB/s z roveru + 1,8 kB/s RTCM, fronta p95 0 (max 1005 B), žádné ztráty → BT stačí i s hudbou, externí BT / Wi-Fi zatím ne. RTK fix 95,5 %. Pravidlo klidu v autě (bod 2) na 6 stáních s motorem splněno, falešně v jízdě 0 s; bias kolem svislice se s ohřevem IMU 25 → 28 °C změnil −0,022 → −0,008 °/s, detektor FW za jízdy aktualizoval jednou.
+
+**Verze 0.16.0 – přeloženo (25. 10.), na HW netestováno:** požadavky z testů 22.–25. 10.
+- `motion`, stav Jedu: když se jede, neměří se. Z Jedu do Měřím jen po 3 min skutečného klidu (σ|a| < 5 mg, zaparkováno, motor vypnutý); stání na semaforu s motorem Jedu nepřeruší. Bez fixu (tunel) se Jedu drží: do Chodím jen po 20 s kroků s otřesy > 80 mg (krabička v ruce), do Manipulace jen s fixem a rychlostí < 0,3 m/s.
+- `imu`, bias gyra ze stání v autě: GNSS část (stav Jedu, rychlost < 0,05 m/s, sAcc < 0,1 m/s, RTK fix nebo hAcc < 0,1 m) nastavuje `motion` po každé epoše (`imu::setCarStop`). IMU část: |a| po dolní propusti 0,5 s a ω po dolní propusti 0,125 s, okno 1 s σ < 8 mg a max |ω| < 1,5 °/s. První a poslední okno stání se zahodí, po ≥ 5 s se bias přiblíží průměru surového gyra s váhou doba/30 s. Do NVS stejně jako průběžná kalibrace.
+- Měření rychlosti – vnitřní profil Rychlost (jen z aplikace, ne v seznamu profilů ani v cyklu tlačítka): `{"cmd":"speed","op":"start|alive|stop"}`. X20 10 Hz, model automotive (maska z aktivního profilu), IMU do BT i bez záznamu se všemi 120 Hz (rámec 0xF5 s decimací 1 po 0,25 s), `$PRVR,SAT` každých 5 s, bez rámců NAV. Bez „alive“ 30 s (i po odpojení BT) návrat na aktivní profil; přepnutí profilu (tlačítko, `profile`, `set profiles`) režim ukončí. Odpověď `{"ok":true,"speed":…,"hz":…}`, `get info` caps `speed`, `prof.speed`.
+- `$PRVR,STA`: frekvence = skutečná (10 Hz v profilu Rychlost); na konci navíc měření rychlosti (0/1), počet aktualizací biasu ze stání v autě, probíhající stání v autě [s].
+- Velikost: RAM 73,2 kB (22,3 %), flash 1,24 MB.
+- Požadavky z testu 22. 10. bod 1 a 2 hotové (body 3 a 4 zrušené dřív).

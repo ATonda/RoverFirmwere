@@ -34,6 +34,12 @@ void setHooks(const Hooks &h) { hooks = h; }
 
 static bool app = false;
 
+// měření rychlosti (FW 0.16.0) – stav, popis u speedStart()
+static constexpr uint32_t SPEED_ALIVE_MS = 30000;
+static constexpr uint8_t SPEED_HZ = 10;
+static bool speedOn = false;
+static uint32_t speedAliveMs = 0;
+
 bool appMode() {
   if (!btlink::connected()) app = false;
   return app;
@@ -180,6 +186,7 @@ static void safeCopy(char *dst, size_t size, const char *src) {
 //           ωmax[°/s],kroky(0–100),krokyHz,rychlost[m/s](-1 bez fixu),změnStavu (0.14.0),
 //           teplotaIMU[°C],klid(0/1, okno 1 s),krokůCelkem,aktualizacíBiasu,biasX,biasY,biasZ[°/s],kalibraceBěží(0/1) (0.15.0)
 //           btPřijemZahozeno[B],btPřijemMaxBuffer[B],jsonZrušeno (0.15.1)
+//           měřeníRychlosti(0/1),biasZeStáníVAutě(počet),stáníVAutě[s] (0.16.0)
 // Od 0.13.0 nemá rover měření bodu – pole měřeníFáze/Čas/Epochy jsou 0.
 void pollCal();  // níže (výsledek kalibrace gyra na pozadí)
 
@@ -203,7 +210,7 @@ void sendSta() {
   n += snprintf(b + n, sizeof(b) - n, ",%lu,%lu,%lu,%lu,%lu,%d", (unsigned long)bs.ubxOk, (unsigned long)bs.ubxBad,
                 (unsigned long)gs.mgaAccepted, (unsigned long)gs.mgaRejected, (unsigned long)gs.mgaDbd, gs.ackAiding);
   // od FW 0.12.0: frekvence navigace aktivního profilu [Hz]
-  n += snprintf(b + n, sizeof(b) - n, ",%u", (unsigned)settings::profile(settings::active()).rateHz);
+  n += snprintf(b + n, sizeof(b) - n, ",%u", (unsigned)navRateHz());
   // od FW 0.13.0: zdroj korekcí, signály s korekcí, výsledek nastavení korekcí, průchozí režim, rámce NAV při záznamu
   const gnss::SigSummary &g = gnss::sig();
   bool sigOk = g.valid && millis() - g.rxMs < 3000;
@@ -223,6 +230,9 @@ void sendSta() {
   // od FW 0.15.1: příjem z mobilu – zahozené bajty (přetečení bufferu), největší zaplnění bufferu, zrušené „JSON“
   n += snprintf(b + n, sizeof(b) - n, ",%lu,%lu,%lu", (unsigned long)bs.rxDropped, (unsigned long)bs.rxMaxFill,
                 (unsigned long)bs.cmdAborted);
+  // od FW 0.16.0: měření rychlosti (0/1), aktualizace biasu ze stání v autě, probíhající stání v autě [s]
+  n += snprintf(b + n, sizeof(b) - n, ",%d,%lu,%lu", speedOn ? 1 : 0, (unsigned long)bi.carUpdates,
+                (unsigned long)bi.carStopSec);
   emit(b, sizeof(b), n);
   btlink::flush();
 }
@@ -234,7 +244,12 @@ void sendSat() {
   const gnss::SatSummary &s = gnss::sats();
   if (!s.valid) return;
   static uint8_t skip = 0;
-  if (appMode() && (++skip & 1)) return;  // v režimu aplikace každé 2 s
+  ++skip;
+  if (speedOn) {
+    if (skip % 5) return;  // měření rychlosti: každých 5 s (šetří BT)
+  } else if (appMode() && (skip & 1)) {
+    return;  // v režimu aplikace každé 2 s
+  }
   static constexpr int PER = 12;
   int total = 0;
   for (int i = 0; i < s.count; i++)
@@ -295,7 +310,39 @@ static void reply(JsonDocument &d) {
   }
 }
 
-bool navRecording() { return ebuf::recording() && btlink::connected(); }
+bool navRecording() { return ebuf::recording() && btlink::connected() && !speedMode(); }
+
+// ---------------------------------------------------------------- měření rychlosti (FW 0.16.0)
+bool speedMode() { return speedOn; }
+
+uint8_t navRateHz() { return speedOn ? SPEED_HZ : settings::profile(settings::active()).rateHz; }
+
+static void speedStart() {
+  const settings::Profile &p = settings::profile(settings::active());
+  speedOn = true;
+  speedAliveMs = millis();
+  motion::setAuto(false);  // model napevno automotive
+  gnss::setParams(1000 / SPEED_HZ, settings::dynCode(settings::Dyn::Automotive), p.elevMask);
+  gnss::configure(true);
+  Serial.println("[rychlost] ZAP – X20 10 Hz, automotive, IMU 120 Hz do BT");
+}
+
+void speedCancel() {
+  if (!speedOn) return;
+  speedOn = false;
+  Serial.println("[rychlost] VYP – přepnutí profilu");
+}
+
+static void speedStop(const char *why) {
+  if (!speedOn) return;
+  speedOn = false;
+  Serial.printf("[rychlost] VYP – %s, návrat na profil %s\n", why, settings::profile(settings::active()).name);
+  if (hooks.applyProfile) hooks.applyProfile(settings::active());
+}
+
+void speedPoll() {
+  if (speedOn && millis() - speedAliveMs > SPEED_ALIVE_MS) speedStop("aplikace 30 s neozvala");
+}
 
 static void infoJson(JsonDocument &d) {
   d["fw"] = FW_VERSION;
@@ -315,13 +362,14 @@ static void infoJson(JsonDocument &d) {
   p["n"] = settings::count();
   p["def"] = settings::defaultIndex();
   p["name"] = settings::profile(settings::active()).name;
-  p["hz"] = settings::profile(settings::active()).rateHz;
+  p["hz"] = navRateHz();
+  p["speed"] = speedOn;
   float v = power::batteryVolts();
   d["bat"] = serialized(String(v, 2));
   d["heap"] = ESP.getFreeHeap();
   d["up"] = millis() / 1000;
   // od 0.13.0: rover umí nastavení z aplikace (profily, přístroj, kalibrace, průchozí režim)
-  d["caps"] = "set,cal,pass,navrec,sig,boot,motion";
+  d["caps"] = "set,cal,pass,navrec,sig,boot,motion,speed";
   // doba od zapnutí ESP (= napájení X20) do prvního fixu atd. [ms]; -1 = zatím ne
   JsonObject bt = d["boot"].to<JsonObject>();
   bt["fix"] = bootFix ? (int32_t)bootFix : -1;
@@ -442,7 +490,7 @@ static void handle(const char *line, size_t len) {
       hooks.applyProfile(i);
       out["i"] = settings::active();
       out["name"] = settings::profile(settings::active()).name;
-      out["hz"] = settings::profile(settings::active()).rateHz;
+      out["hz"] = navRateHz();
     }
   } else if (!strcmp(cmd, "meas")) {
     const char *op = in["op"] | "";
@@ -462,6 +510,21 @@ static void handle(const char *line, size_t len) {
       Serial.printf("[app] měření bodu %s%s%s (X20 %s)\n", st || raw ? "ZAP" : "VYP", st ? ", statický model" : "",
                     raw ? ", RAWX" : "", ack ? "OK" : "bez potvrzení");
     }
+  } else if (!strcmp(cmd, "speed")) {
+    const char *op = in["op"] | "";
+    if (!strcmp(op, "start")) {
+      if (!speedOn) speedStart();
+      else speedAliveMs = millis();
+    } else if (!strcmp(op, "alive")) {
+      if (speedOn) speedAliveMs = millis();
+    } else if (!strcmp(op, "stop")) {
+      speedStop("příkaz z aplikace");
+    } else {
+      out["ok"] = false;
+      out["err"] = "op: start|alive|stop";
+    }
+    out["speed"] = speedOn;
+    out["hz"] = navRateHz();
   } else if (!strcmp(cmd, "rec")) {
     const char *op = in["op"] | "";
     if (!strcmp(op, "start")) ebuf::setRecording(true);

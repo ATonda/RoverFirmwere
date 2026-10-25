@@ -213,6 +213,7 @@ static void bridgeStop() {
 // ---------------------------------------------------------------- profily
 // Nastaví parametry z profilu; reconfigure = hned poslat do X20 (jinak až při init)
 static void applyProfile(int i, bool reconfigure) {
+  proto::speedCancel();  // přepnutí profilu ukončí měření rychlosti (FW 0.16.0)
   settings::setActive(i);
   const settings::Profile &p = settings::profile(settings::active());
   gnss::setParams(1000 / p.rateHz, settings::dynCode(p.dyn), p.elevMask);
@@ -621,6 +622,7 @@ void loop() {
   buzzer::poll();
   if (newPvt) motion::onPvt();
   motion::poll();
+  proto::speedPoll();
 
   {
     btlink::poll();

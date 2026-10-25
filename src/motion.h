@@ -3,7 +3,7 @@
 // Stavy: Měřím (klid), Manipulace (prudké pohyby bez kroků), Chodím (kroky), Jedu (auto).
 // Vyhodnocení každých 0,5 s z okna 2 s (240 vzorků IMU 120 Hz). Při profilu s modelem „automaticky“
 // se podle stavu přepíná CFG-NAVSPG-DYNMODEL (jen RAM): Měřím = stationary, Manipulace a Chodím = pedestrian,
-// Jedu = automotive. Popis a meze: docs/rover-firmware-specifikace.md (FW 0.14.0, klid FW 0.15.0).
+// Jedu = automotive. Popis a meze: docs/rover-firmware-specifikace.md (FW 0.14.0, klid FW 0.15.0, Jedu FW 0.16.0).
 #pragma once
 #include <Arduino.h>
 

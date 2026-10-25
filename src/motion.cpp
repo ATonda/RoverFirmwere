@@ -40,6 +40,17 @@ static constexpr int N_WALK = 6;                // 3 s kroků -> Chodím
 static constexpr int N_HANDLE = 2;              // 1 s prudkých pohybů na místě -> Manipulace (ze stání, z jízdy)
 static constexpr int N_HANDLE_WALK = 6;         // 3 s prudkých pohybů na místě -> z chůze Manipulace
 static constexpr uint32_t DRIVE_RESUME_MS = 120000;  // stání v autě do 2 min: rozjezd = Jedu
+// FW 0.16.0 (testy 22.–25. 10.): když se jede, neměří se. Z Jedu do Měřím jen po 3 min skutečného klidu
+// (σ|a| < 5 mg – motor vypnutý, zaparkováno); stání na semaforu s motorem (7–11 mg) Jedu nepřeruší.
+// Bez fixu (tunel) se Jedu drží: vibrace auta (~30–55 mg) nejsou Manipulace ani kroky.
+static constexpr int N_PARK = 360;              // 3 min klidu (po 0,5 s) -> z Jedu do Měřím
+static constexpr int N_WALK_NOFIX = 40;         // bez fixu z Jedu do Chodím jen po 20 s kroků ...
+static constexpr float WALK_NOFIX_STD = 0.08f;  // ... s otřesy krabičky v ruce (> 80 mg; auto na desce 20–55 mg)
+// Klid v autě pro bias gyra (GNSS + IMU, vyhodnocení 22.–25. 10.): rychlost < 0,05 m/s, sAcc < 0,1 m/s,
+// RTK fix nebo hAcc < 0,1 m. Část IMU kontroluje imu (dolní propust, σ < 8 mg, ω < 1,5 °/s, aspoň 5 s).
+static constexpr float CAR_STOP_V = 0.05f;
+static constexpr float CAR_STOP_SACC = 0.1f;
+static constexpr float CAR_STOP_HACC = 0.1f;
 static constexpr uint32_t MODEL_MIN_MS = 2000;  // přepnutí modelu nejvýš 1× za 2 s
 
 static float bufA[WIN], bufG[WIN];  // |a| [g], |ω| [°/s]
@@ -52,6 +63,7 @@ static uint8_t overBuf[UNREST_WIN];  // vzorek nad mezí klidu (1/0)
 static int overHead = 0, overSum = 0, gyroRun = 0;
 static bool exitHit = false;         // v Měřím splněna podmínka odchodu
 static int nStill = 0, nSteps = 0, nSharpSlow = 0, nWalkV = 0, nFast = 0, nMed = 0, nSmooth = 0;
+static int nPark = 0, nStepsHand = 0;
 static bool autoMode = false;
 static uint8_t sentModel = 0xFF;
 static uint32_t sentMs = 0;
@@ -84,6 +96,10 @@ void onPvt() {
   const gnss::Pvt &p = gnss::pvt();
   f.speed = (p.valid && p.gnssFixOk && p.fixType >= 2 && p.sAcc < 1.0f) ? p.gSpeed : -1.0f;
   sAccNow = (p.valid && p.gnssFixOk) ? p.sAcc : 99.0f;
+  // GNSS část podmínky klidu v autě (bias gyra) – jen ve stavu Jedu
+  bool gnssStop = p.valid && p.gnssFixOk && p.fixType >= 3 && p.gSpeed < CAR_STOP_V && p.sAcc < CAR_STOP_SACC &&
+                  (p.carrSoln == 2 || p.hAcc < CAR_STOP_HACC);
+  imu::setCarStop(cur == DRIVE && gnssStop);
 }
 
 // Znaky okna: rozptyl |a|, odchylka od 1 g, max |ω|, autokorelace kroků
@@ -146,6 +162,7 @@ static void evaluate() {
   float v = f.speed;  // -1 = bez fixu
   nStill = f.still ? nStill + 1 : 0;
   nSteps = f.steps ? nSteps + 1 : 0;
+  nStepsHand = (f.steps && f.accStd > WALK_NOFIX_STD) ? nStepsHand + 1 : 0;
   nSharpSlow = (f.sharp && v < V_HANDLE) ? nSharpSlow + 1 : 0;  // i bez fixu (v = -1)
   nWalkV = (v > V_WALK_MIN && v <= V_WALK && f.accStd > WALK_STD_MIN) ? nWalkV + 1 : 0;
   nSmooth = (v > V_CAR && f.accStd < CAR_STD_MAX && !f.steps) ? nSmooth + 1 : 0;
@@ -164,12 +181,21 @@ static void evaluate() {
     else setState(HANDLE);
     return;
   }
+  if (cur == DRIVE) {
+    // když se jede, neměří se: Měřím až po 3 min skutečného klidu (zaparkováno, motor vypnutý)
+    nPark = (nStill > 0 && stopped) ? nPark + 1 : 0;
+    bool fix = v >= 0;
+    if (nPark >= N_PARK) setState(MEASURE);
+    else if (fix && nSteps >= N_WALK_FROM_DRIVE && v < V_WALK) setState(WALK);
+    else if (!fix && nStepsHand >= N_WALK_NOFIX) setState(WALK);   // bez fixu jen jasná chůze s krabičkou v ruce
+    else if (fix && v < V_HANDLE && nSharpSlow >= N_HANDLE) setState(HANDLE);  // bez fixu (tunel) nikdy
+    return;
+  }
+  nPark = 0;
   if (nStill >= N_MEASURE && stopped) setState(MEASURE);
-  else if (cur != DRIVE && (nFast >= N_DRIVE_FAST || nMed >= N_DRIVE_MED || nSmooth >= N_DRIVE_SMOOTH)) setState(DRIVE);
-  else if (cur == DRIVE && nSteps >= N_WALK_FROM_DRIVE && v < V_WALK) setState(WALK);
+  else if (nFast >= N_DRIVE_FAST || nMed >= N_DRIVE_MED || nSmooth >= N_DRIVE_SMOOTH) setState(DRIVE);
   else if (cur == HANDLE && (nSteps >= N_WALK || nWalkV >= N_WALK) && v < V_WALK) setState(WALK);
   else if (cur == WALK && nSharpSlow >= N_HANDLE_WALK) setState(HANDLE);
-  else if (cur == DRIVE && nSharpSlow >= N_HANDLE) setState(HANDLE);
 }
 
 uint8_t model() {

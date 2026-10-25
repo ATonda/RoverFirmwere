@@ -63,6 +63,28 @@ static float savedX = 0, savedY = 0, savedZ = 0;
 static uint32_t savedMs = 0;
 static bool savedOnce = false;
 // kalibrace na pozadí
+// ---------------------------------------------------------------- stání v autě (FW 0.16.0)
+static constexpr int CAR_LP_A = 60;               // dolní propust |a|: průměr 0,5 s
+static constexpr int CAR_LP_G = 15;               // dolní propust ω: průměr 0,125 s
+static constexpr float CAR_ACC_STD = 0.008f;      // [g]
+static constexpr float CAR_GYRO_MAX = 1.5f;       // [°/s]
+static constexpr uint32_t CAR_MIN_SEC = 5;        // nejkratší použitelné stání [s] (bez prvního a posledního okna)
+static constexpr float CAR_FULL_SEC = 30.0f;      // stání 30 s = plná váha
+static volatile bool carGnss = false;
+static float lpA[CAR_LP_A];
+static float lpG[CAR_LP_G][3];
+static double lpASum = 0, lpGSum[3] = {0, 0, 0};
+static int lpAi = 0, lpGi = 0, lpAn = 0, lpGn = 0;
+static double cwA = 0, cwA2 = 0;                  // okno 1 s – filtrované |a|
+static float cwG = 0;                             //            max filtrovaného |ω|
+static double cwRaw[3] = {0, 0, 0};               //            surové gyro
+static int cwN = 0;
+static double cPend[3] = {0, 0, 0};               // poslední vyhovující okno (čeká, jestli bude i další)
+static bool cPendOk = false, cFirst = true;
+static double cSum[3] = {0, 0, 0};
+static uint32_t cN = 0, cSec = 0;
+static uint32_t carUpd = 0;
+
 static bool bgCal = false;
 static uint32_t bgCalMs = 0, bgCalDur = 0;
 static double bgSum[3] = {0, 0, 0}, bgSq[3] = {0, 0, 0};
@@ -176,6 +198,74 @@ static void stillTrack(float rx, float ry, float rz, float ax, float ay, float a
   wN = 0;
 }
 
+static void carCommit() {
+  if (cSec >= CAR_MIN_SEC && cN > 0 && !blockingCal && !bgCal) {
+    float k = fminf(1.0f, cSec / CAR_FULL_SEC);
+    biasX += k * ((float)(cSum[0] / cN) - biasX);
+    biasY += k * ((float)(cSum[1] / cN) - biasY);
+    biasZ += k * ((float)(cSum[2] / cN) - biasZ);
+    biasTemp = tempC;
+    carUpd++;
+    biasUpdates++;
+    float d = fmaxf(fabsf(biasX - savedX), fmaxf(fabsf(biasY - savedY), fabsf(biasZ - savedZ)));
+    if (d > SAVE_MIN_DIFF && (!savedOnce || millis() - savedMs >= SAVE_MIN_MS)) saveBias();
+  }
+  for (int i = 0; i < 3; i++) cSum[i] = 0;
+  cN = 0;
+  cSec = 0;
+  cPendOk = false;
+  cFirst = true;
+}
+
+// Stání v autě – každý vzorek (surové gyro, zrychlení)
+static void carTrack(float rx, float ry, float rz, float ax, float ay, float az) {
+  float a = sqrtf(ax * ax + ay * ay + az * az);
+  lpASum += a - (lpAn == CAR_LP_A ? lpA[lpAi] : 0.0f);
+  lpA[lpAi] = a;
+  lpAi = (lpAi + 1) % CAR_LP_A;
+  if (lpAn < CAR_LP_A) lpAn++;
+  float g3[3] = {rx - biasX, ry - biasY, rz - biasZ};
+  for (int i = 0; i < 3; i++) {
+    lpGSum[i] += g3[i] - (lpGn == CAR_LP_G ? lpG[lpGi][i] : 0.0f);
+    lpG[lpGi][i] = g3[i];
+  }
+  lpGi = (lpGi + 1) % CAR_LP_G;
+  if (lpGn < CAR_LP_G) lpGn++;
+  if (lpAn < CAR_LP_A || lpGn < CAR_LP_G) return;
+  float fa = lpASum / CAR_LP_A;
+  float fg = sqrtf((float)(lpGSum[0] * lpGSum[0] + lpGSum[1] * lpGSum[1] + lpGSum[2] * lpGSum[2])) / CAR_LP_G;
+  cwA += fa;
+  cwA2 += (double)fa * fa;
+  if (fg > cwG) cwG = fg;
+  cwRaw[0] += rx;
+  cwRaw[1] += ry;
+  cwRaw[2] += rz;
+  if (++cwN < STILL_WIN) return;
+  double m = cwA / cwN, var = cwA2 / cwN - m * m;
+  bool ok = carGnss && var < (double)CAR_ACC_STD * CAR_ACC_STD && cwG < CAR_GYRO_MAX;
+  if (ok) {
+    // vyhovující okno se započte až s dalším vyhovujícím (poslední okno před rozjezdem se zahodí); první se přeskočí
+    if (cFirst) cFirst = false;
+    else {
+      if (cPendOk) {
+        for (int i = 0; i < 3; i++) cSum[i] += cPend[i];
+        cN += cwN;
+        cSec++;
+      }
+      for (int i = 0; i < 3; i++) cPend[i] = cwRaw[i];
+      cPendOk = true;
+    }
+  } else if (!cFirst) {
+    carCommit();
+  }
+  cwA = cwA2 = 0;
+  cwG = 0;
+  for (int i = 0; i < 3; i++) cwRaw[i] = 0;
+  cwN = 0;
+}
+
+void setCarStop(bool gnssOk) { carGnss = gnssOk; }
+
 // Kalibrace na pozadí – každý vzorek (surové gyro)
 static void bgCalTrack(float rx, float ry, float rz) {
   if (!bgCal) return;
@@ -250,6 +340,7 @@ static void pushSample() {
   s.ay = aRaw[1] * ACC_SENS;
   s.az = aRaw[2] * ACC_SENS;
   stillTrack(rx, ry, rz, s.ax, s.ay, s.az);
+  carTrack(rx, ry, rz, s.ax, s.ay, s.az);
   bgCalTrack(rx, ry, rz);
   s.gx = rx - biasX;
   s.gy = ry - biasY;
@@ -569,6 +660,8 @@ BiasInfo biasInfo() {
   b.updates = biasUpdates;
   b.stillSec = rSec;
   b.still = winStill;
+  b.carUpdates = carUpd;
+  b.carStopSec = cSec;
   return b;
 }
 

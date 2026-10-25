@@ -89,6 +89,19 @@ void setHooks(const Hooks &h);
 bool appMode();
 
 // Záznam v aplikaci a připojený BT: rover posílá navíc celé rámce NAV-PVT, NAV-COV a NAV-HPPOSLLH (EKF offline)
+// (v režimu měření rychlosti ne – šetří přenos BT)
 bool navRecording();
+
+// Měření rychlosti z aplikace (FW 0.16.0) – vnitřní profil „Rychlost“, není v seznamu profilů ani v cyklu tlačítka:
+//   {"cmd":"speed","op":"start"}  – X20 10 Hz, model automotive (maska z aktivního profilu), surové IMU 120 Hz do BT
+//                                   (rámce 0xF5, decimace 1) i bez záznamu, $PRVR,SAT každých 5 s, bez rámců NAV
+//   {"cmd":"speed","op":"alive"}  – aplikace žije (posílat každých 5 s)
+//   {"cmd":"speed","op":"stop"}   – návrat na aktivní profil
+// Bez „alive“ 30 s (i po odpojení BT) se rover sám vrátí na aktivní profil. Přepnutí profilu (tlačítko, příkaz
+// profile, set profiles) režim ukončí. Odpověď {"ok":true,"speed":true|false,"hz":…}.
+bool speedMode();
+void speedPoll();      // z loop – hlídání „alive“
+void speedCancel();    // volá main při přepnutí profilu (profil se aplikuje sám)
+uint8_t navRateHz();   // skutečná frekvence navigace (profil, nebo 10 Hz v režimu rychlosti)
 
 }  // namespace proto

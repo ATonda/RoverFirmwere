@@ -53,7 +53,14 @@ struct BiasInfo {
   uint32_t updates = 0;          // počet průběžných aktualizací od startu
   uint32_t stillSec = 0;         // délka nepřerušeného klidu [s]
   bool still = false;            // poslední okno 1 s je klid
+  uint32_t carUpdates = 0;       // aktualizace biasu ze stání v autě (FW 0.16.0)
+  uint32_t carStopSec = 0;       // délka probíhajícího stání v autě splňujícího podmínky [s]
 };
+// Stání v autě (FW 0.16.0): GNSS část podmínky (stav Jedu, rychlost < 0,05 m/s, sAcc < 0,1, RTK fix nebo hAcc < 0,1 m)
+// nastavuje motion po každé epoše. IMU část: |a| a ω po dolní propusti (vibrace motoru se odfiltrují) – okno 1 s
+// σ|a| < 8 mg a max |ω| < 1,5 °/s. Po ≥ 5 s takového stání se bias přiblíží průměru surového gyra
+// (váha doba/30 s, nejvýš 1). První a poslední okno stání se nepoužije (rozjezd, zastavení).
+void setCarStop(bool gnssOk);
 BiasInfo biasInfo();
 float temperature();           // poslední teplota IMU [°C]
 
