@@ -32,7 +32,7 @@ uint8_t dynCode(Dyn d) {
   }
 }
 
-static bool dynFromName(const char *s, Dyn &d) {
+bool dynFromName(const char *s, Dyn &d) {
   for (int i = 0; i < 4; i++) {
     if (s && strcmp(s, DYN_NAMES[i]) == 0) {
       d = (Dyn)i;

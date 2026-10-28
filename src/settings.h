@@ -39,6 +39,7 @@ int next();                    // další profil cyklicky, vrací nový index
 
 uint8_t dynCode(Dyn d);        // kód u-blox pro CFG-NAVSPG-DYNMODEL
 const char *dynName(Dyn d);
+bool dynFromName(const char *s, Dyn &d);  // "auto", "pedestrian", "automotive", "stationary"
 
 // Profily jako JSON: {"active":0,"default":0,"profiles":[{…}]}
 String profilesJson();

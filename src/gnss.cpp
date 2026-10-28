@@ -1,4 +1,5 @@
 #include "gnss.h"
+#include "console.h"
 
 #include <esp_timer.h>
 
@@ -408,7 +409,7 @@ bool configure(bool verbose) {
     ubx::ValSet a(ubx::LAYER_RAM);
     a.addL(ubx::KEY_NAVSPG_ACKAIDING, true);
     ackAidingRes = sendValSet(a, 500);
-    if (verbose) Serial.printf("  NAVSPG-ACKAIDING: %s\n", ackAidingRes == 1 ? "OK" : ackAidingRes == 0 ? "NAK" : "bez odpovědi");
+    if (verbose) Con.printf("  NAVSPG-ACKAIDING: %s\n", ackAidingRes == 1 ? "OK" : ackAidingRes == 0 ? "NAK" : "bez odpovědi");
   }
   // Korekce zvlášť (klíče CFG-NAVCOR jsou jen v HPG 2.1x): SBAS, HAS, korekce od hostitele (RTCM) vždy zap.
   {
@@ -418,7 +419,7 @@ bool configure(bool verbose) {
     c.addL(ubx::KEY_NAVCOR_ENABLE_GAL_HAS, corrHas);
     corrCfgRes = sendValSet(c, 500);
     if (verbose)
-      Serial.printf("  korekce SBAS %s, HAS %s, RTCM zap: %s\n", corrSbas ? "zap" : "vyp", corrHas ? "zap" : "vyp",
+      Con.printf("  korekce SBAS %s, HAS %s, RTCM zap: %s\n", corrSbas ? "zap" : "vyp", corrHas ? "zap" : "vyp",
                     corrCfgRes == 1 ? "OK" : corrCfgRes == 0 ? "NAK" : "bez odpovědi");
   }
 
@@ -426,18 +427,18 @@ bool configure(bool verbose) {
   for (const Item &it : items) add(all, it);
   int8_t r = sendValSet(all, 1000);
   if (r == 1) {
-    if (verbose) Serial.println("  konfigurace X20 (RAM): OK");
+    if (verbose) Con.println("  konfigurace X20 (RAM): OK");
     return true;
   }
   // Při NAK nebo bez odpovědi poslat klíče jednotlivě a zjistit, který vadí
-  if (verbose) Serial.printf("  konfigurace X20 (RAM): %s, zkouším klíče jednotlivě\n", r == 0 ? "NAK" : "bez odpovědi");
+  if (verbose) Con.printf("  konfigurace X20 (RAM): %s, zkouším klíče jednotlivě\n", r == 0 ? "NAK" : "bez odpovědi");
   bool allOk = true;
   for (const Item &it : items) {
     ubx::ValSet one(ubx::LAYER_RAM);
     add(one, it);
     int8_t ri = sendValSet(one, 500);
     if (ri != 1) allOk = false;
-    if (verbose) Serial.printf("    %-24s %s\n", it.name, ri == 1 ? "OK" : ri == 0 ? "NAK" : "bez odpovědi");
+    if (verbose) Con.printf("    %-24s %s\n", it.name, ri == 1 ? "OK" : ri == 0 ? "NAK" : "bez odpovědi");
   }
   return allOk;
 }
@@ -474,7 +475,7 @@ InitResult init(uint32_t searchMs) {
   bool found = detect();
   while (!found && millis() - t0 < searchMs) found = detect();
   if (!found) return InitResult::NotFound;
-  Serial.printf("  X20 nalezena na %lu Bd\n", (unsigned long)curBaud);
+  Con.printf("  X20 nalezena na %lu Bd\n", (unsigned long)curBaud);
 
   if (curBaud != GNSS_BAUD_TARGET) {
     // Rychlost jen do RAM; po vypnutí X20 se vrátí hodnota z Flash a ESP ji při startu znovu přepne
@@ -486,11 +487,11 @@ InitResult init(uint32_t searchMs) {
     delay(50);
     while (UART.available()) UART.read();
     if (!pollVersion(1000)) {
-      Serial.printf("  přepnutí na %lu Bd selhalo, hledám znovu\n", (unsigned long)GNSS_BAUD_TARGET);
+      Con.printf("  přepnutí na %lu Bd selhalo, hledám znovu\n", (unsigned long)GNSS_BAUD_TARGET);
       detect();
       return InitResult::BaudFailed;
     }
-    Serial.printf("  X20 přepnuta na %lu Bd\n", (unsigned long)GNSS_BAUD_TARGET);
+    Con.printf("  X20 přepnuta na %lu Bd\n", (unsigned long)GNSS_BAUD_TARGET);
   }
 
   return configure(true) ? InitResult::Ok : InitResult::ConfigPartial;
@@ -536,33 +537,33 @@ void onSat(void (*cb)()) { satCb = cb; }
 static bool bridging = false;
 
 void bridgeBegin() {
-  Serial.flush();
+  Con.flush();
   delay(50);
-  Serial.updateBaudRate(curBaud);
-  while (Serial.available()) Serial.read();
+  Con.updateBaudRate(curBaud);
+  while (Con.available()) Con.read();
   bridging = true;
 }
 
 void bridgeStep() {
   if (!bridging) return;
   uint8_t buf[512];
-  int n = Serial.available();
+  int n = Con.available();
   if (n > 0) {
-    n = Serial.readBytes(buf, n > (int)sizeof(buf) ? sizeof(buf) : n);
+    n = Con.readBytes(buf, n > (int)sizeof(buf) ? sizeof(buf) : n);
     UART.write(buf, n);
   }
   n = UART.available();
   if (n > 0) {
     n = UART.readBytes(buf, n > (int)sizeof(buf) ? sizeof(buf) : n);
-    Serial.write(buf, n);
+    Con.write(buf, n);
   }
 }
 
 void bridgeEnd() {
   if (!bridging) return;
   bridging = false;
-  Serial.flush();
-  Serial.updateBaudRate(115200);
+  Con.flush();
+  Con.updateBaudRate(115200);
   delay(50);
   while (UART.available()) UART.read();
 }

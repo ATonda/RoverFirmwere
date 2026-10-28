@@ -22,12 +22,17 @@ struct Stats {
   uint32_t ubxBad = 0;        // rámce UBX z mobilu s chybným součtem nebo délkou
   uint32_t rxDropped = 0;     // bajty z mobilu zahozené – přetečení přijímacího bufferu (0.15.1)
   uint32_t rxMaxFill = 0;     // největší zaplnění přijímacího bufferu [B] (0.15.1)
-  uint32_t cmdAborted = 0;    // začátky „JSON“ zrušené binárním bajtem (data vrácena do proudu X20) (0.15.1)
+  uint32_t cmdAborted = 0;    // začátky „JSON“ zrušené binárním bajtem (0.15.1)
+  uint32_t junk = 0;          // zahozené bajty mimo rámce RTCM/UBX a řádky JSON (0.17.0)
+  uint32_t rtcmDropped = 0;   // RTCM zahozené v režimu USB host (přednost má USB) (0.17.0)
 };
 
 // Příkaz JSON z mobilu: řádek začínající '{' mimo rámec RTCM a UBX, bez \n
 using CmdHandler = void (*)(const char *line, size_t len);
 void setCmdHandler(CmdHandler h);
+// Do X20 jdou jen celé rámce RTCM3 / UBX s platným CRC (FW 0.17.0); blokované = RTCM z BT se zahazuje
+void setRtcmBlocked(bool b);
+uint32_t rtcmFwdMs();               // millis() posledního RTCM předaného do X20 (0 = nikdy)
 bool connected();                   // BT běží a klient je připojen
 uint32_t backlog();                 // odeslaná, ale zásobníkem BT dosud nepotvrzená data [B]
 

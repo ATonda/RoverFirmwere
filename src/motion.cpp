@@ -1,4 +1,5 @@
 #include "motion.h"
+#include "console.h"
 
 #include "gnss.h"
 
@@ -153,7 +154,7 @@ static void setState(State s) {
   if (old != MEASURE) lastMoving = old;
   cur = s;
   nChanges++;
-  Serial.printf("[pohyb] %s -> %s (v %.1f m/s, |a| σ %.0f mg, ω max %.0f °/s, kroky %.2f, neklid %.2f s)\n",
+  Con.printf("[pohyb] %s -> %s (v %.1f m/s, |a| σ %.0f mg, ω max %.0f °/s, kroky %.2f, neklid %.2f s)\n",
                 stateName(old), stateName(s), f.speed, f.accStd * 1000, f.gyroMax, f.stepScore, f.unrest);
 }
 

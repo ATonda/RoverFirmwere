@@ -1,4 +1,5 @@
 #include "proto.h"
+#include "console.h"
 
 #include <ArduinoJson.h>
 
@@ -9,6 +10,7 @@
 #include "motion.h"
 #include "power.h"
 #include "settings.h"
+#include "usblink.h"
 
 namespace proto {
 
@@ -40,18 +42,30 @@ static constexpr uint8_t SPEED_HZ = 10;
 static bool speedOn = false;
 static uint32_t speedAliveMs = 0;
 
+// režim USB host (FW 0.17.0) – stav, popis u usbStart()
+static constexpr uint32_t USB_ALIVE_MS = 3000;
+static bool usbOn = false;
+static uint8_t usbHz = 5;
+static settings::Dyn usbDyn = settings::Dyn::Pedestrian;
+static uint32_t usbAliveMs = 0;
+
 bool appMode() {
   if (!btlink::connected()) app = false;
   return app;
 }
 
-// Doplní *CS\r\n a pošle do dávky BT. b musí mít místo na 5 znaků za n.
-static void emit(char *b, size_t size, int n) {
-  if (n <= 0 || (size_t)n + 5 >= size) return;
+// Doplní *CS\r\n; vrací novou délku, 0 = nevejde se. b musí mít místo na 5 znaků za n.
+static int seal(char *b, size_t size, int n) {
+  if (n <= 0 || (size_t)n + 5 >= size) return 0;
   uint8_t cs = 0;
   for (int i = 1; i < n; i++) cs ^= (uint8_t)b[i];
-  n += snprintf(b + n, size - n, "*%02X\r\n", cs);
-  btlink::send(b, n);
+  return n + snprintf(b + n, size - n, "*%02X\r\n", cs);
+}
+
+// Doplní *CS\r\n a pošle do dávky BT. b musí mít místo na 5 znaků za n.
+static void emit(char *b, size_t size, int n) {
+  n = seal(b, size, n);
+  if (n) btlink::send(b, n);
 }
 
 uint8_t quality() {
@@ -116,28 +130,34 @@ bool capturePos(PosRec &r) {
   return true;
 }
 
-void sendRec(const PosRec &r, bool buffered) {
-  char b[256];
-  int n = snprintf(b, sizeof(b), buffered ? "$PRVR,BUF," : "$PRVR,POS,");
+// Věta $PRVR,POS / $PRVR,BUF i s *CS\r\n; vrací délku (0 = chyba)
+static int fmtRec(char *b, size_t size, const PosRec &r, bool buffered) {
+  int n = snprintf(b, size, buffered ? "$PRVR,BUF," : "$PRVR,POS,");
   if (r.flags & F_TIME) {
-    n += snprintf(b + n, sizeof(b) - n, "%02u%02u%02u.%03u,%02u%02u%02u,", r.hour, r.min, r.sec, r.ms, r.day, r.month,
+    n += snprintf(b + n, size - n, "%02u%02u%02u.%03u,%02u%02u%02u,", r.hour, r.min, r.sec, r.ms, r.day, r.month,
                   r.year % 100);
   } else {
-    n += snprintf(b + n, sizeof(b) - n, ",,");
+    n += snprintf(b + n, size - n, ",,");
   }
   if (r.q != Q_NONE) {
-    n += snprintf(b + n, sizeof(b) - n, "%.9f,%.9f,%.4f,%.4f,", r.lat, r.lon, r.hEll, r.hMSL);
+    n += snprintf(b + n, size - n, "%.9f,%.9f,%.4f,%.4f,", r.lat, r.lon, r.hEll, r.hMSL);
   } else {
-    n += snprintf(b + n, sizeof(b) - n, ",,,,");
+    n += snprintf(b + n, size - n, ",,,,");
   }
-  if (r.flags & F_COV) n += snprintf(b + n, sizeof(b) - n, "%.4f,%.4f,%.4f,", r.sN, r.sE, r.sD);
-  else n += snprintf(b + n, sizeof(b) - n, ",,,");
-  n += snprintf(b + n, sizeof(b) - n, "%.4f,%.4f,%u,%u,%u,", r.hAcc, r.vAcc, r.q, r.carrSoln, (r.flags & F_RTCM) ? 1 : 0);
-  if (r.flags & F_CORR) n += snprintf(b + n, sizeof(b) - n, "%.1f,", r.corrAgeS);
-  else n += snprintf(b + n, sizeof(b) - n, ",");
-  n += snprintf(b + n, sizeof(b) - n, "%u,%.2f,%.3f,%.1f,%u,%u", r.numSV, r.pDOP100 / 100.0f, r.gSpeed, r.headMot,
+  if (r.flags & F_COV) n += snprintf(b + n, size - n, "%.4f,%.4f,%.4f,", r.sN, r.sE, r.sD);
+  else n += snprintf(b + n, size - n, ",,,");
+  n += snprintf(b + n, size - n, "%.4f,%.4f,%u,%u,%u,", r.hAcc, r.vAcc, r.q, r.carrSoln, (r.flags & F_RTCM) ? 1 : 0);
+  if (r.flags & F_CORR) n += snprintf(b + n, size - n, "%.1f,", r.corrAgeS);
+  else n += snprintf(b + n, size - n, ",");
+  n += snprintf(b + n, size - n, "%u,%.2f,%.3f,%.1f,%u,%u", r.numSV, r.pDOP100 / 100.0f, r.gSpeed, r.headMot,
                 (r.flags & F_MOVING) ? 1 : 0, (r.flags & F_HP) ? 1 : 0);
-  emit(b, sizeof(b), n);
+  return seal(b, size, n);
+}
+
+void sendRec(const PosRec &r, bool buffered) {
+  char b[256];
+  int n = fmtRec(b, sizeof(b), r, buffered);
+  if (n) btlink::send(b, n);
 }
 
 void sendBufEnd(uint32_t n) {
@@ -165,6 +185,11 @@ void sendPos() {
   bool c = btlink::connected();
   ebuf::onEpoch(r, c);
   if (c) sendRec(r, false);
+  if (usbOn) {  // režim USB host: každá epocha i na Serial, nezávisle na BT
+    char b[256];
+    int n = fmtRec(b, sizeof(b), r, false);
+    if (n) usblink::send(b, n);
+  }
 }
 
 // Text do věty: čárka, hvězdička a řídicí znaky se nahradí mezerou
@@ -187,21 +212,44 @@ static void safeCopy(char *dst, size_t size, const char *src) {
 //           teplotaIMU[°C],klid(0/1, okno 1 s),krokůCelkem,aktualizacíBiasu,biasX,biasY,biasZ[°/s],kalibraceBěží(0/1) (0.15.0)
 //           btPřijemZahozeno[B],btPřijemMaxBuffer[B],jsonZrušeno (0.15.1)
 //           měřeníRychlosti(0/1),biasZeStáníVAutě(počet),stáníVAutě[s] (0.16.0)
+//           usbhost(0/1),zdrojRtcm(0 žádný/1 BT/2 USB),rtcmUsbOk,rtcmUsbChybné (0.17.0)
+// rtcmOk, rtcmChybné, stáříRtcm, typRtcm: zdroj, který jde do X20 (od 0.17.0 v režimu USB host z USB).
+// V režimu USB host jde STA i na Serial (nezávisle na BT).
 // Od 0.13.0 nemá rover měření bodu – pole měřeníFáze/Čas/Epochy jsou 0.
 void pollCal();  // níže (výsledek kalibrace gyra na pozadí)
 
+// Statistika RTCM zdroje, který jde do X20 (režim USB host: USB, jinak BT)
+struct RtcmStat {
+  uint32_t ok, bad, lastMs;
+  uint16_t lastType;
+};
+
+static RtcmStat rtcmStat() {
+  RtcmStat r;
+  if (rtcmSource() == 2) {
+    const RxParser::Stats &u = usblink::stats();
+    r = {u.rtcmOk, u.rtcmBad, u.rtcmLastMs, u.rtcmLastType};
+  } else {
+    btlink::Stats bs = btlink::stats();
+    r = {bs.rtcmOk, bs.rtcmBad, bs.rtcmLastMs, bs.rtcmLastType};
+  }
+  return r;
+}
+
 void sendSta() {
   pollCal();
-  if (!btlink::connected()) return;
+  bool bt = btlink::connected();
+  if (!bt && !usbOn) return;
   btlink::Stats bs = btlink::stats();
+  RtcmStat rs = rtcmStat();
   gnss::Stats gs = gnss::stats();
   float v = power::batteryVolts();
   char pname[25];
   safeCopy(pname, sizeof(pname), settings::profile(settings::active()).name);
-  char b[560];
+  char b[640];
   int n = snprintf(b, sizeof(b), "$PRVR,STA,%s,%.2f,%d,%d,%d,%s,%lu,%lu,", FW_VERSION, v, power::batteryPercentStable(),
-                   settings::active(), settings::count(), pname, (unsigned long)bs.rtcmOk, (unsigned long)bs.rtcmBad);
-  if (bs.rtcmOk) n += snprintf(b + n, sizeof(b) - n, "%.1f,%u,", (millis() - bs.rtcmLastMs) / 1000.0f, bs.rtcmLastType);
+                   settings::active(), settings::count(), pname, (unsigned long)rs.ok, (unsigned long)rs.bad);
+  if (rs.ok) n += snprintf(b + n, sizeof(b) - n, "%.1f,%u,", (millis() - rs.lastMs) / 1000.0f, rs.lastType);
   else n += snprintf(b + n, sizeof(b) - n, ",,");
   n += snprintf(b + n, sizeof(b) - n, "%lu,%lu,0,0,0,%lu,%lu,%d,%d,%lu", (unsigned long)gs.ubxErr,
                 (unsigned long)ESP.getFreeHeap(), (unsigned long)bs.txDropped, (unsigned long)btlink::backlog(),
@@ -233,8 +281,17 @@ void sendSta() {
   // od FW 0.16.0: měření rychlosti (0/1), aktualizace biasu ze stání v autě, probíhající stání v autě [s]
   n += snprintf(b + n, sizeof(b) - n, ",%d,%lu,%lu", speedOn ? 1 : 0, (unsigned long)bi.carUpdates,
                 (unsigned long)bi.carStopSec);
-  emit(b, sizeof(b), n);
-  btlink::flush();
+  // od FW 0.17.0: režim USB host (0/1), zdroj RTCM do X20 (0 žádný, 1 BT, 2 USB), RTCM z USB správné / chybné
+  const RxParser::Stats &us = usblink::stats();
+  n += snprintf(b + n, sizeof(b) - n, ",%d,%u,%lu,%lu", usbOn ? 1 : 0, rtcmSource(), (unsigned long)us.rtcmOk,
+                (unsigned long)us.rtcmBad);
+  n = seal(b, sizeof(b), n);
+  if (!n) return;
+  if (bt) {
+    btlink::send(b, n);
+    btlink::flush();
+  }
+  if (usbOn) usblink::send(b, n);
 }
 
 // $PRVR,SAT,část,částí,celkem,{gnssId,svId,C/N0,elevace,azimut,použit}×(max 12)
@@ -275,6 +332,7 @@ void sendSat() {
 // ---------------------------------------------------------------- příkazy JSON
 // Odpověď na jednom řádku; do BT po částech (dávka BT má 2 kB), do konzole USB přímo
 static bool toConsole = false;
+static bool fromUsb = false;       // příkaz z ESP32-S3 (režim USB host)
 static bool calToConsole = false;  // kam poslat výsledek kalibrace gyra na pozadí
 static void calJson(JsonDocument &d);
 static void reply(JsonDocument &d);
@@ -298,8 +356,13 @@ static void reply(JsonDocument &d) {
   String out;
   serializeJson(d, out);
   out += "\r\n";
+  // režim USB host: odpověď na Serial i při umlčené konzoli (i na příkaz usbhost, který režim zapnul)
+  if (fromUsb || (toConsole && usbOn)) {
+    usblink::send(out.c_str(), out.length());
+    return;
+  }
   if (toConsole) {
-    Serial.print(out);
+    Con.print(out);
     return;
   }
   btlink::flush();  // rozpracovaná dávka NMEA nejdřív
@@ -315,7 +378,10 @@ bool navRecording() { return ebuf::recording() && btlink::connected() && !speedM
 // ---------------------------------------------------------------- měření rychlosti (FW 0.16.0)
 bool speedMode() { return speedOn; }
 
-uint8_t navRateHz() { return speedOn ? SPEED_HZ : settings::profile(settings::active()).rateHz; }
+uint8_t navRateHz() {
+  if (usbOn) return usbHz;
+  return speedOn ? SPEED_HZ : settings::profile(settings::active()).rateHz;
+}
 
 static void speedStart() {
   const settings::Profile &p = settings::profile(settings::active());
@@ -324,24 +390,72 @@ static void speedStart() {
   motion::setAuto(false);  // model napevno automotive
   gnss::setParams(1000 / SPEED_HZ, settings::dynCode(settings::Dyn::Automotive), p.elevMask);
   gnss::configure(true);
-  Serial.println("[rychlost] ZAP – X20 10 Hz, automotive, IMU 120 Hz do BT");
+  Con.println("[rychlost] ZAP – X20 10 Hz, automotive, IMU 120 Hz do BT");
 }
 
 void speedCancel() {
   if (!speedOn) return;
   speedOn = false;
-  Serial.println("[rychlost] VYP – přepnutí profilu");
+  Con.println("[rychlost] VYP – přepnutí profilu");
 }
 
 static void speedStop(const char *why) {
   if (!speedOn) return;
   speedOn = false;
-  Serial.printf("[rychlost] VYP – %s, návrat na profil %s\n", why, settings::profile(settings::active()).name);
+  Con.printf("[rychlost] VYP – %s, návrat na profil %s\n", why, settings::profile(settings::active()).name);
   if (hooks.applyProfile) hooks.applyProfile(settings::active());
 }
 
 void speedPoll() {
   if (speedOn && millis() - speedAliveMs > SPEED_ALIVE_MS) speedStop("aplikace 30 s neozvala");
+}
+
+// ---------------------------------------------------------------- režim USB host (FW 0.17.0)
+// ESP32-S3 připojená kabelem USB-C pošle ze Serial {"cmd":"usbhost","hz":5,"model":"pedestrian"} a opakuje ho 1×/s.
+// Režim je jen v RAM (nic se neukládá), mimo seznam profilů. Frekvence a model z příkazu, ostatní (maska, SBAS, HAS,
+// výška antény, PCO) z aktivního profilu. 3 s bez příkazu -> návrat na aktivní profil a obnovení konzole.
+bool usbMode() { return usbOn; }
+
+static void usbApply() {
+  const settings::Profile &p = settings::profile(settings::active());
+  motion::setAuto(usbDyn == settings::Dyn::Auto);  // pevný model z S3 – automatické přepínání vypnout
+  gnss::setParams(1000 / usbHz, settings::dynCode(usbDyn), p.elevMask);
+  gnss::configure(false);
+}
+
+static void usbStart(uint8_t hz, settings::Dyn dyn) {
+  Con.printf("[usb] režim USB host ZAP – %u Hz, %s; konzole umlčena\n", hz, settings::dynName(dyn));
+  speedOn = false;  // měření rychlosti končí, parametry X20 nastaví usbApply()
+  if (gnss::measStatic() || gnss::measRaw()) gnss::setMeasMode(false, false);  // statický model / RAWX vypnout
+  usbOn = true;
+  usbHz = hz;
+  usbDyn = dyn;
+  usbAliveMs = millis();
+  usblink::setActive(true);
+  btlink::setRtcmBlocked(true);  // RTCM z USB má přednost
+  usbApply();
+}
+
+static void usbStop(const char *why) {
+  if (!usbOn) return;
+  usbOn = false;
+  usblink::setActive(false);
+  btlink::setRtcmBlocked(false);
+  Con.printf("\n[usb] režim USB host VYP – %s, návrat na profil %s\n", why,
+             settings::profile(settings::active()).name);
+  if (hooks.applyProfile) hooks.applyProfile(settings::active());
+}
+
+void usbPoll() {
+  if (usbOn && millis() - usbAliveMs > USB_ALIVE_MS) usbStop("3 s bez příkazu z S3");
+}
+
+uint8_t rtcmSource() {
+  uint32_t now = millis();
+  uint32_t b = btlink::rtcmFwdMs(), u = usblink::rtcmFwdMs();
+  bool bOk = b && now - b < 30000, uOk = u && now - u < 30000;
+  if (uOk && (!bOk || (int32_t)(u - b) >= 0)) return 2;
+  return bOk ? 1 : 0;
 }
 
 static void infoJson(JsonDocument &d) {
@@ -364,12 +478,13 @@ static void infoJson(JsonDocument &d) {
   p["name"] = settings::profile(settings::active()).name;
   p["hz"] = navRateHz();
   p["speed"] = speedOn;
+  p["usbhost"] = usbOn;
   float v = power::batteryVolts();
   d["bat"] = serialized(String(v, 2));
   d["heap"] = ESP.getFreeHeap();
   d["up"] = millis() / 1000;
   // od 0.13.0: rover umí nastavení z aplikace (profily, přístroj, kalibrace, průchozí režim)
-  d["caps"] = "set,cal,pass,navrec,sig,boot,motion,speed";
+  d["caps"] = "set,cal,pass,navrec,sig,boot,motion,speed,usbhost";
   // doba od zapnutí ESP (= napájení X20) do prvního fixu atd. [ms]; -1 = zatím ne
   JsonObject bt = d["boot"].to<JsonObject>();
   bt["fix"] = bootFix ? (int32_t)bootFix : -1;
@@ -403,11 +518,26 @@ static void handle(const char *line, size_t len) {
     return;
   }
   if (!in["id"].isNull()) out["id"] = in["id"];
-  if (!toConsole) app = true;  // příkaz poslala aplikace RoverGnss
+  bool fromBt = !toConsole && !fromUsb;
+  if (fromBt) app = true;  // příkaz poslala aplikace RoverGnss
   const char *cmd = in["cmd"] | "";
   const char *what = in["what"] | "";
   out["ok"] = true;
   bool restartAfter = false;
+
+  // Režim USB host: frekvenci a model určuje S3 – změny profilu, měření rychlosti a bodu a průchozí režim odmítnout
+  if (usbOn) {
+    const char *op = in["op"] | "";
+    if (!strcmp(cmd, "profile") || (!strcmp(cmd, "speed") && !strcmp(op, "start")) ||
+        (!strcmp(cmd, "meas") && !strcmp(op, "start")) || !strcmp(cmd, "passthrough")) {
+      out["ok"] = false;
+      out["err"] = "režim USB host";
+      out["usbhost"] = true;
+      out["hz"] = navRateHz();
+      reply(out);
+      return;
+    }
+  }
 
   if (!strcmp(cmd, "get") && !strcmp(what, "info")) {
     infoJson(out);
@@ -421,9 +551,10 @@ static void handle(const char *line, size_t len) {
       out["ok"] = false;
       out["err"] = in["data"].isNull() ? String("chybí data") : err;
     } else {
-      if (hooks.applyProfile) hooks.applyProfile(settings::active());
+      // v režimu USB host jen uložit – aktivní profil se aplikuje po konci režimu
+      if (hooks.applyProfile && !usbOn) hooks.applyProfile(settings::active());
       out["data"] = serialized(settings::profilesJson());
-      Serial.printf("[app] profily uloženy (%d), aktivní %d\n", settings::count(), settings::active() + 1);
+      Con.printf("[app] profily uloženy (%d), aktivní %d\n", settings::count(), settings::active() + 1);
     }
   } else if (!strcmp(cmd, "get") && !strcmp(what, "device")) {
     out["data"] = serialized(settings::deviceJson());
@@ -458,7 +589,7 @@ static void handle(const char *line, size_t len) {
         uint32_t ms = in["ms"] | 30000;
         if (ms < 3000) ms = 3000;
         if (ms > 120000) ms = 120000;
-        calToConsole = toConsole;
+        calToConsole = toConsole || fromUsb;
         imu::startCalibration(ms);
         out["pending"] = true;
         out["ms"] = ms;
@@ -507,7 +638,7 @@ static void handle(const char *line, size_t len) {
       out["static"] = gnss::measStatic();
       out["raw"] = gnss::measRaw();
       out["ack"] = ack;  // X20 potvrdila konfiguraci
-      Serial.printf("[app] měření bodu %s%s%s (X20 %s)\n", st || raw ? "ZAP" : "VYP", st ? ", statický model" : "",
+      Con.printf("[app] měření bodu %s%s%s (X20 %s)\n", st || raw ? "ZAP" : "VYP", st ? ", statický model" : "",
                     raw ? ", RAWX" : "", ack ? "OK" : "bez potvrzení");
     }
   } else if (!strcmp(cmd, "speed")) {
@@ -525,6 +656,36 @@ static void handle(const char *line, size_t len) {
     }
     out["speed"] = speedOn;
     out["hz"] = navRateHz();
+  } else if (!strcmp(cmd, "usbhost")) {
+    // {"cmd":"usbhost","hz":5,"model":"pedestrian"} – zapne režim USB host, opakováním 1×/s ho drží
+    out["cmd"] = "usbhost";
+    uint8_t hz = in["hz"] | 5;
+    const char *m = in["model"] | "pedestrian";
+    settings::Dyn d;
+    if (fromBt) {
+      out["ok"] = false;
+      out["err"] = "jen ze Serial (USB)";
+    } else if (hz != 1 && hz != 5 && hz != 10) {
+      out["ok"] = false;
+      out["err"] = "hz: 1|5|10";
+    } else if (!settings::dynFromName(m, d)) {
+      out["ok"] = false;
+      out["err"] = "model: auto|pedestrian|automotive|stationary";
+    } else if (!usbOn) {
+      usbStart(hz, d);
+    } else {
+      usbAliveMs = millis();
+      if (hz != usbHz || d != usbDyn) {  // heartbeat se změnou parametrů – přenastavit X20
+        usbHz = hz;
+        usbDyn = d;
+        usbApply();
+      }
+    }
+    out["usbhost"] = usbOn;
+    out["hz"] = navRateHz();
+    out["model"] = settings::dynName(usbOn ? usbDyn : settings::profile(settings::active()).dyn);
+    out["profile"] = settings::active();
+    out["name"] = settings::profile(settings::active()).name;
   } else if (!strcmp(cmd, "rec")) {
     const char *op = in["op"] | "";
     if (!strcmp(op, "start")) ebuf::setRecording(true);
@@ -556,14 +717,14 @@ static void handle(const char *line, size_t len) {
       out["ok"] = false;
       out["err"] = "kind: hot|warm|cold";
     }
-    if (out["ok"]) Serial.printf("[app] X20 %s start\n", gnss::resetKindText());
+    if (out["ok"]) Con.printf("[app] X20 %s start\n", gnss::resetKindText());
   } else {
     out["ok"] = false;
     out["err"] = "neznámý příkaz";
   }
   reply(out);
   if (restartAfter && hooks.restart) {
-    if (!toConsole) btlink::flush();
+    if (!toConsole && !fromUsb) btlink::flush();
     delay(300);  // odpověď musí odejít
     hooks.restart();
   }
@@ -578,6 +739,12 @@ void handleConsoleCmd(const char *line, size_t len) {
   toConsole = true;
   handle(line, len);
   toConsole = false;
+}
+
+void handleUsbCmd(const char *line, size_t len) {
+  fromUsb = true;
+  handle(line, len);
+  fromUsb = false;
 }
 
 }  // namespace proto

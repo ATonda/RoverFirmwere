@@ -5,6 +5,7 @@
 //               {json} odpovědi na příkazy; vedle toho NMEA beze změny
 // app -> rover: RTCM3 (0xD3…) do X20, {json} příkaz na jednom řádku (ukončený \n)
 // Stejné příkazy JSON přijímá i konzole USB (řádek začínající '{'), odpověď jde zpět do konzole.
+// Režim USB host (ESP32-S3 na Serial): viz usbMode() níže.
 #pragma once
 #include <Arduino.h>
 
@@ -57,6 +58,8 @@ bool moving();
 void handleCmd(const char *line, size_t len);
 // Totéž z konzole USB – odpověď do Serial
 void handleConsoleCmd(const char *line, size_t len);
+// Příkaz z ESP32-S3 v režimu USB host (usblink) – odpověď na Serial i při umlčené konzoli
+void handleUsbCmd(const char *line, size_t len);
 
 // Akce, které provede main
 struct Hooks {
@@ -102,6 +105,19 @@ bool navRecording();
 bool speedMode();
 void speedPoll();      // z loop – hlídání „alive“
 void speedCancel();    // volá main při přepnutí profilu (profil se aplikuje sám)
-uint8_t navRateHz();   // skutečná frekvence navigace (profil, nebo 10 Hz v režimu rychlosti)
+uint8_t navRateHz();   // skutečná frekvence navigace (profil, 10 Hz v režimu rychlosti, nebo z režimu USB host)
+
+// Režim USB host (FW 0.17.0) – ESP32-S3 připojená kabelem USB-C (CH340K, Serial 115200):
+//   {"cmd":"usbhost","hz":5,"model":"pedestrian"}  – jen ze Serial; zapne režim, opakováním 1×/s ho drží
+//       hz 1|5|10, model auto|pedestrian|automotive|stationary; maska, SBAS, HAS, výška antény, PCO z aktivního profilu
+//       odpověď {"ok":true,"cmd":"usbhost","usbhost":true,"hz":…,"model":…,"profile":…,"name":…,"id":…}
+//   V režimu: $PRVR,POS každou epochu a $PRVR,STA 1 Hz i na Serial (nezávisle na BT), ostatní výpisy umlčené;
+//   ze Serial jen řádky JSON a rámce RTCM3/UBX; RTCM z BT se zahazuje (přednost má USB).
+//   Odmítnuto (ok:false, err "režim USB host", usbhost:true, hz): profile, speed start, meas start, passthrough;
+//   set profiles se uloží a aplikuje až po konci režimu. Krátký stisk tlačítka se ignoruje.
+//   3 s bez příkazu -> návrat na aktivní profil, konzole zpět. Nic se neukládá (jen RAM).
+bool usbMode();
+void usbPoll();        // z loop – hlídání heartbeatu
+uint8_t rtcmSource();  // zdroj RTCM do X20 za posledních 30 s: 0 žádný, 1 BT, 2 USB
 
 }  // namespace proto

@@ -1,4 +1,5 @@
 #include "epochbuf.h"
+#include "console.h"
 
 #include <LittleFS.h>
 #include <Preferences.h>
@@ -54,7 +55,7 @@ bool begin() {
   size_t avail = total > used + RESERVE ? total - used - RESERVE + own : 0;
   half = (uint32_t)(avail / 2 / REC) * REC;
   if (half < 64 * REC) half = 64 * REC;
-  Serial.printf("[buf] zásobník epoch: %lu epoch (%lu kB), záznam %s, uloženo %lu\n", (unsigned long)capacity(),
+  Con.printf("[buf] zásobník epoch: %lu epoch (%lu kB), záznam %s, uloženo %lu\n", (unsigned long)capacity(),
                 (unsigned long)(2 * half / 1024), rec ? "ZAP" : "VYP", (unsigned long)count());
   return true;
 }
@@ -82,7 +83,7 @@ void setRecording(bool on) {
       p.putBool("rec", on);
       p.end();
     }
-    Serial.printf("[buf] záznam aplikace %s\n", on ? "ZAP – při výpadku BT se epochy ukládají" : "VYP");
+    Con.printf("[buf] záznam aplikace %s\n", on ? "ZAP – při výpadku BT se epochy ukládají" : "VYP");
   }
   if (!on) clear();
 }
@@ -121,7 +122,7 @@ void onEpoch(const proto::PosRec &r, bool connected) {
       // výpadek: i poslední epochy „odeslané“ před zjištěním odpojení
       for (int i = 0; i < histN; i++) writeRec(hist[(histPos - histN + i + HIST) % HIST]);
       histN = 0;
-      Serial.println("[buf] výpadek BT – ukládám epochy");
+      Con.println("[buf] výpadek BT – ukládám epochy");
     }
     writeRec(r);
   }
@@ -167,7 +168,7 @@ void poll() {
         if (openStage()) continue;
       }
       proto::sendBufEnd(replayN);
-      Serial.printf("[buf] odesláno %lu epoch ze zásobníku\n", (unsigned long)replayN);
+      Con.printf("[buf] odesláno %lu epoch ze zásobníku\n", (unsigned long)replayN);
       replayOn = false;
       break;
     }
@@ -183,7 +184,7 @@ void poll() {
     }
     rfStage = 2;  // konec obou souborů
     proto::sendBufEnd(replayN);
-    Serial.printf("[buf] odesláno %lu epoch ze zásobníku\n", (unsigned long)replayN);
+    Con.printf("[buf] odesláno %lu epoch ze zásobníku\n", (unsigned long)replayN);
     replayOn = false;
     break;
   }

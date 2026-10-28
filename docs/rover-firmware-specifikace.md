@@ -459,3 +459,17 @@ Hlavní použití: měření za chůze (mapování), statické geodetické měř
 - `$PRVR,STA`: frekvence = skutečná (10 Hz v profilu Rychlost); na konci navíc měření rychlosti (0/1), počet aktualizací biasu ze stání v autě, probíhající stání v autě [s].
 - Velikost: RAM 73,2 kB (22,3 %), flash 1,24 MB.
 - Požadavky z testu 22. 10. bod 1 a 2 hotové (body 3 a 4 zrušené dřív).
+
+**Verze 0.17.0 – přeloženo (28. 10.), na HW netestováno:** režim USB host pro ESP32-S3 (sestava CurieFinder „dvě čidla“); dohoda rozhraní v `rover-curiefinder-rozhrani.md`, kap. „Režim USB host“.
+- `{"cmd":"usbhost","hz":5,"model":"pedestrian"}` jen ze `Serial` (z BT odmítnuto). Režim jen v RAM, mimo seznam profilů; frekvence (1/5/10 Hz) a model (`auto`/`pedestrian`/`automotive`/`stationary`) z příkazu, maska, SBAS, HAS, výška antény a PCO z aktivního profilu. Opakování 1×/s drží režim, se změnou parametrů přenastaví X20; 3 s bez příkazu → návrat na aktivní profil, konzole zpět. Odpověď `{"ok":true,"cmd":"usbhost","usbhost":…,"hz":…,"model":…,"profile":…,"name":…,"id":…}`. Při zapnutí končí měření rychlosti a měření bodu (statický model, RAWX).
+- V režimu odmítnuto (`ok:false`, `err` „režim USB host“, `usbhost:true`, `hz`): `profile`, `speed start`, `meas start`, `passthrough`; `set profiles` se uloží a aplikuje až po konci režimu. Krátký stisk tlačítka se ignoruje (krátké pípnutí 800 Hz), podržení 5 s restartuje.
+- Výstup na `Serial` v režimu: `$PRVR,POS` každou epochu a `$PRVR,STA` 1 Hz nezávisle na BT, odpovědi JSON. Ostatní výpisy jdou přes `Con` (`console.h`), v režimu umlčené; příkazy písmeny a ozvěna NMEA nejdou. Do BT beze změny.
+- Vstup ze `Serial` v režimu: řádky JSON a rámce RTCM3 / UBX stejným parserem jako BT (`rxparse`), vlastní stav (`usblink`). RTCM z BT se v režimu zahazuje (přednost má USB). `Serial` RX buffer 4096 B.
+- **Obecně (i mimo režim, i BT):** do X20 jdou jen celé rámce RTCM3 / UBX s platným CRC / součtem, každý jedním zápisem (rámce ze dvou zdrojů se nepromíchají). Bajty mimo rámce a řádky JSON se zahodí. Řádek JSON musí začínat `{"` a mít platné UTF-8, jinak se bere jako binární data a bajty za `{` se zpracují znovu (najde se i rámec uvnitř zahozeného „rámce“; totéž po chybném CRC).
+- Příznak `rtcm` (POS) a kvalita FIX/FLOAT vs. HAS: RTCM předané do X20 z BT nebo USB za posledních 30 s (dřív přijaté z BT).
+- Ochrana konzole: po konci režimu a po každém binárním bajtu na vstupu konzole se 5 s neprovádějí příkazy písmeny (bajty RTCM z S3 by je mohly spustit), řádky JSON ano; řádek s řídicím bajtem se neprovede nikdy.
+- `$PRVR,STA` na konci navíc: režim USB host (0/1), zdroj RTCM do X20 (0 žádný, 1 BT, 2 USB), RTCM z USB správné, chybné. Pole `rtcmOk`, `rtcmChybné`, `stáříRtcm`, `typRtcm` ukazují zdroj, který jde do X20.
+- `get info`: `prof.usbhost`, caps `usbhost`.
+- Hardware: RTS → EN na FireBeetle přerušit (S3 navíc drží DTR i RTS neaktivní); po nahrání firmwaru stisknout RST.
+- Velikost: RAM 80,3 kB (24,5 %), flash 1,24 MB.
+

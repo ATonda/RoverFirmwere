@@ -6,6 +6,7 @@
 
 #include "config.h"
 #include "gnss.h"
+#include "rxparse.h"
 
 namespace btlink {
 
@@ -19,74 +20,28 @@ static Stats st;
 static bool started = false;
 static volatile Event pendingEvent = Event::None;
 
-// ---------------------------------------------------------------- RTCM3 (jen statistika, data jdou do X20 beze změny)
-static uint32_t crc24q(const uint8_t *d, size_t n) {
-  uint32_t crc = 0;
-  for (size_t i = 0; i < n; i++) {
-    crc ^= (uint32_t)d[i] << 16;
-    for (int b = 0; b < 8; b++) {
-      crc <<= 1;
-      if (crc & 0x1000000) crc ^= 0x1864CFB;
-    }
-  }
-  return crc & 0xFFFFFF;
-}
-
-static uint8_t rtcmBuf[1029];  // 3 hlavička + 1023 data + 3 CRC
-static uint16_t rtcmPos = 0, rtcmLen = 0;
-
-// ---------------------------------------------------------------- UBX z mobilu (asistence MGA)
-// Rámec jde do X20 beze změny; uvnitř se nehledá začátek JSON (bajt 0x7B v datech by rámec rozbil).
-static uint16_t ubxPos = 0, ubxLen = 0;
-static uint8_t ubxCkA = 0, ubxCkB = 0, ubxRxA = 0;
-
-// Vrací false, když bajt nepatří do rámce UBX (pak se zpracuje jako RTCM)
-static bool ubxFeed(uint8_t c) {
-  if (ubxPos == 0) {
-    if (c != 0xB5) return false;
-    ubxPos = 1;
-    return true;
-  }
-  if (ubxPos == 1) {
-    if (c != 0x62) {
-      ubxPos = 0;
-      return false;
-    }
-    ubxPos = 2;
-    ubxCkA = ubxCkB = 0;
-    return true;
-  }
-  uint16_t i = ubxPos++;  // 2 třída, 3 ID, 4–5 délka, pak data, 2 B součet
-  if (i < 6 + ubxLen || i < 6) {
-    ubxCkA += c;
-    ubxCkB += ubxCkA;
-    if (i == 4) ubxLen = c;
-    if (i == 5) {
-      ubxLen |= (uint16_t)c << 8;
-      if (ubxLen > 2048) {  // nesmysl – nebyl to rámec
-        st.ubxBad++;
-        ubxPos = 0;
-        ubxLen = 0;
-      }
-    }
-    return true;
-  }
-  if (i == 6 + ubxLen) {
-    ubxRxA = c;
-    return true;
-  }
-  if (ubxRxA == ubxCkA && c == ubxCkB) st.ubxOk++;
-  else st.ubxBad++;
-  ubxPos = 0;
-  ubxLen = 0;
-  return true;
-}
-
-// Řádek příkazu JSON z mobilu (set profiles s 10 profily má ~2,5 kB)
-static char cmdBuf[4096];
-static size_t cmdLen = 0;
-static bool cmdOverflow = false;
+// ---------------------------------------------------------------- příjem z mobilu (FW 0.17.0)
+// Řádky JSON, rámce RTCM3 a UBX (asistence MGA) – do X20 jdou jen celé platné rámce (rxparse).
+// Řádek příkazu JSON z mobilu: set profiles s 10 profily má ~2,5 kB.
+static uint8_t pbuf[4096], prep[4096];
+static RxParser parser(pbuf, prep, sizeof(pbuf), 2048);
 static CmdHandler cmdHandler = nullptr;
+static bool rtcmBlocked = false;   // režim USB host: RTCM z USB má přednost, z BT se zahazuje
+static uint32_t fwdMs = 0;         // poslední RTCM předané do X20
+static uint32_t rtcmDropped = 0;
+
+static void onFrame(const uint8_t *f, size_t n, bool rtcm) {
+  if (rtcm && rtcmBlocked) {
+    rtcmDropped++;
+    return;
+  }
+  gnss::writeRaw(f, n);  // celý rámec najednou
+  if (rtcm) fwdMs = millis();
+}
+
+static void onCmd(const char *line, size_t len) {
+  if (cmdHandler) cmdHandler(line, len);
+}
 
 // ---------------------------------------------------------------- příjem z mobilu (0.15.1)
 // BluetoothSerial má pevnou frontu příjmu 512 B a při zaplnění zbytek paketu tiše zahodí
@@ -99,33 +54,6 @@ static void onBtData(const uint8_t *d, size_t n) {
   if (!rxSb || !n) return;
   size_t w = xStreamBufferSend(rxSb, d, n, 0);
   if (w < n) st.rxDropped += n - w;
-}
-
-static void rtcmFeed(uint8_t c) {
-  if (rtcmPos == 0) {
-    if (c != 0xD3) return;
-    rtcmBuf[rtcmPos++] = c;
-    return;
-  }
-  rtcmBuf[rtcmPos++] = c;
-  if (rtcmPos == 3) {
-    rtcmLen = ((rtcmBuf[1] & 0x03) << 8) | rtcmBuf[2];
-    if (rtcmBuf[1] & 0xFC) {  // rezervované bity musí být 0 – není to začátek zprávy
-      rtcmPos = 0;
-      return;
-    }
-  }
-  if (rtcmPos >= 3 && rtcmPos == rtcmLen + 6) {
-    uint32_t crc = (rtcmBuf[rtcmLen + 3] << 16) | (rtcmBuf[rtcmLen + 4] << 8) | rtcmBuf[rtcmLen + 5];
-    if (crc24q(rtcmBuf, rtcmLen + 3) == crc) {
-      st.rtcmOk++;
-      st.rtcmLastMs = millis();
-      if (rtcmLen >= 2) st.rtcmLastType = (rtcmBuf[3] << 4) | (rtcmBuf[4] >> 4);
-    } else {
-      st.rtcmBad++;
-    }
-    rtcmPos = 0;
-  }
 }
 
 // ---------------------------------------------------------------- fronta odesílání
@@ -163,6 +91,7 @@ const char *defaultName() {
 }
 
 bool begin(const char *customName) {
+  parser.setHandlers(onCmd, onFrame);
   strlcpy(btName, (customName && customName[0]) ? customName : defaultName(), sizeof(btName));
   // Párování „Just Works“ bez potvrzování čísla (přístroj nemá displej ani klávesnici).
   // Bez toho Android při párování čeká na potvrzení, které ESP nemá komu předat, a spojení SPP se nenaváže.
@@ -193,62 +122,6 @@ const char *name() { return btName; }
 
 bool active() { return started; }
 
-// Bajty pro X20 (vše kromě řádků JSON) se skládají a posílají po dávkách
-static uint8_t fwd[256];
-static size_t fwdLen = 0;
-
-static void fwdFlush() {
-  if (fwdLen) {
-    gnss::writeRaw(fwd, fwdLen);
-    fwdLen = 0;
-  }
-}
-
-static void fwdByte(uint8_t c) {
-  fwd[fwdLen++] = c;
-  if (fwdLen == sizeof(fwd)) fwdFlush();
-  if (rtcmPos != 0 || !ubxFeed(c)) rtcmFeed(c);
-}
-
-// Binární bajt uvnitř „řádku JSON“: '{' byl bajt binárních dat (RTCM/UBX po ztrátě synchronizace).
-// Pohlcené bajty se vrátí do proudu pro X20, statistika RTCM se podle nich znovu zasynchronizuje.
-static void cmdAbort(uint8_t c) {
-  st.cmdAborted++;
-  size_t n = cmdLen;
-  cmdLen = 0;
-  cmdOverflow = false;
-  for (size_t i = 0; i < n; i++) fwdByte((uint8_t)cmdBuf[i]);
-  fwdByte(c);
-}
-
-static void rxByte(uint8_t c) {
-  // Řádek JSON začíná '{' mimo rámec RTCM a UBX a končí \n; do X20 nejde
-  if (cmdLen == 0 && rtcmPos == 0 && ubxPos == 0 && c == '{') {
-    cmdBuf[cmdLen++] = c;
-    return;
-  }
-  if (cmdLen > 0) {
-    if (c == '\n' || c == '\r') {
-      fwdFlush();
-      if (!cmdOverflow && cmdHandler) {
-        cmdBuf[cmdLen] = 0;
-        st.cmds++;
-        cmdHandler(cmdBuf, cmdLen);
-      }
-      cmdLen = 0;
-      cmdOverflow = false;
-    } else if (c < 0x20 && c != '\t') {
-      cmdAbort(c);  // řídicí bajt v JSON být nemůže (UTF-8 nad 0x7F je povolené)
-    } else if (cmdLen < sizeof(cmdBuf) - 1) {
-      cmdBuf[cmdLen++] = c;
-    } else {
-      cmdOverflow = true;  // příliš dlouhý řádek – zahodit až do konce řádku
-    }
-    return;
-  }
-  fwdByte(c);
-}
-
 void poll() {
   if (!started) return;
   bool c = bt.hasClient();
@@ -256,11 +129,7 @@ void poll() {
     st.connects++;
     pendingEvent = Event::Connected;
     // nové spojení: rozpracované rámce a řádek z minulého spojení zahodit
-    cmdLen = 0;
-    cmdOverflow = false;
-    rtcmPos = 0;
-    ubxPos = 0;
-    ubxLen = 0;
+    parser.reset();
   } else if (!c && st.connected) {
     pendingEvent = Event::Disconnected;
   }
@@ -274,7 +143,7 @@ void poll() {
     int rounds = 0;  // nejvýš 8 kB za jedno volání, ať smyčka nestojí
     while (rounds++ < 32 && (n = xStreamBufferReceive(rxSb, buf, sizeof(buf), 0)) > 0) {
       st.rxBytes += n;
-      for (size_t i = 0; i < n; i++) rxByte(buf[i]);
+      for (size_t i = 0; i < n; i++) parser.put(buf[i]);
     }
   } else {
     int n;
@@ -282,10 +151,9 @@ void poll() {
       n = bt.readBytes(buf, n > (int)sizeof(buf) ? sizeof(buf) : n);
       if (n <= 0) break;
       st.rxBytes += n;
-      for (int i = 0; i < n; i++) rxByte(buf[i]);
+      for (int i = 0; i < n; i++) parser.put(buf[i]);
     }
   }
-  fwdFlush();
 }
 
 bool connected() { return started && st.connected; }
@@ -293,6 +161,9 @@ bool connected() { return started && st.connected; }
 static uint32_t lastResetMs = 0;
 
 void setCmdHandler(CmdHandler h) { cmdHandler = h; }
+
+void setRtcmBlocked(bool b) { rtcmBlocked = b; }
+uint32_t rtcmFwdMs() { return fwdMs; }
 
 // Věty jedné epochy se skládají do dávky a odesílají jedním zápisem.
 // Když v zásobníku BT čeká víc než BT_MAX_BACKLOG bajtů (telefon nestíhá nebo je spojení přerušované),
@@ -350,7 +221,21 @@ void sendNow(const uint8_t *d, size_t n) {
   st.txBytes += n;
 }
 
-Stats stats() { return st; }
+Stats stats() {
+  Stats r = st;
+  const RxParser::Stats &p = parser.stats();
+  r.rtcmOk = p.rtcmOk;
+  r.rtcmBad = p.rtcmBad;
+  r.rtcmLastType = p.rtcmLastType;
+  r.rtcmLastMs = p.rtcmLastMs;
+  r.ubxOk = p.ubxOk;
+  r.ubxBad = p.ubxBad;
+  r.cmds = p.cmds;
+  r.cmdAborted = p.cmdAborted;
+  r.junk = p.junk;
+  r.rtcmDropped = rtcmDropped;
+  return r;
+}
 
 Event takeEvent() {
   Event e = pendingEvent;
